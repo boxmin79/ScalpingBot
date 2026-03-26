@@ -1,0 +1,35 @@
+# 파이썬 컴파일 파일
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 가상환경 (용량이 크고 환경마다 다르므로 제외)
+venv/
+.venv/
+env/
+.swingbot/
+
+# VS Code 설정 폴더 (개인적인 에디터 설정)
+.vscode/
+
+data/
+.env
+
+# 수집된 데이터 (예: 이전에 사용하신 kospi_minute_csv 폴더 등)
+*.csv
+*.xlsx
+*.db
+*.sqlite3
+*.pkl
+*.pyc
+.parquet
+
+# 로그 파일
+*.log
+logs/
+
+.tmp.drivedownload/
+.tmp.driveupload/
+
+tree.txt
+desktop.ini
