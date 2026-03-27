@@ -98,4 +98,5 @@ if __name__ == "__main__":
     screener = DynamicScreener()
     targets = screener.run_screener(top_n=20)
     for target in targets:
-        print(f"rank: {target['rank']}, code: {target['code']}, name: {target['name']}, diff_rate: {target['diff_rate']}, amount: {target['actual_amount']}")
+        print(target)
+

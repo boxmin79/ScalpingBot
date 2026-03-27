@@ -1,16 +1,6 @@
 import win32com.client
 import pythoncom
-
-# [공통] 이벤트 핸들러 클래스
-class CpEvent:
-    def set_params(self, client, name):
-        self.client = client
-        self.name = name
-
-    def OnReceived(self):
-        # 데이터 수신 시 클라이언트의 process_received 호출
-        if hasattr(self.client, 'process_received'):
-            self.client.process_received()
+from API.CpEvent import CpEvent
 
 class CpStockJpBid:
     """
