@@ -1,6 +1,6 @@
 import win32com.client
 
-class CpCybosStatus:
+class CpCybos:
     """CYBOS의 각종 상태(연결, 서버 종류) 및 요청 제한을 확인하는 클래스"""
     
     def __init__(self):

@@ -144,6 +144,7 @@ class CpCodeManager:
     def is_arrg_sby(self, code): return self.obj.IsStockArrgSby(code) # 정리매매
     def is_low_liquidity(self, code): return self.obj.IsLowLiquidity(code) # 초저유동성
     def is_invest_danger(self, code): return self.obj.IsStockInvestDangerCompany(code) # 투자환기
+    def is_stock_ioi(self, code): return self.obj.IsStockIoi(code) # ETN/ETF
 
     # --- [7] 기타 설정 및 시간 ---
     def get_market_times(self):
