@@ -8,6 +8,7 @@ from Screener.UniverseBuilder import UniverseBuilder
 from Screener.DynamicScreener import DynamicScreener
 from Signal.RealtimeManager import RealtimeManager
 from API.CpAPI import CreonAPI
+from API.AccountManager import AccountManager # 🎯 AccountManager 임포트
 
 class TradingBot:
     def __init__(self):
@@ -16,95 +17,107 @@ class TradingBot:
         print(f"   일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"==================================================")
         
-        # 0. 서버 연결 상태 확인
+        # 0. CreonAPI 통합 객체 생성
         self.api = CreonAPI()
         
-        # 2. 연결 상태 확인 (obj_cybos.IsConnect 사용)
-        # IsConnect가 1이면 정상, 0이면 연결 끊김입니다.
+        # 1. 서버 연결 상태 확인
         if self.api.obj_cybos.IsConnect == 0:
             print("❌ CYBOS 연결 실패. 프로그램을 종료합니다.")
             sys.exit()
 
-        # 각 엔진 초기화
+        # 2. 주문 서비스 초기화 (TradeInit)
+        init_status = self.api.obj_trade_util.TradeInit(0)
+        if init_status != 0:
+            print(f"❌ 주문 서비스 초기화 실패 (에러코드: {init_status})")
+            sys.exit()
+
+        # 3. 계좌 정보 자동 추출
+        # CpTdUtil을 통해 접속된 첫 번째 계좌와 주식 상품 코드를 가져옵니다.
+        self.acc_no = self.api.obj_trade_util.AccountNumber[0]
+        self.acc_flag = self.api.obj_trade_util.GoodsList(self.acc_no, 1)[0]
+        
+        # 4. AccountManager 초기화 및 자산 확인
+        # 추출한 계좌 정보를 AccountManager에 주입합니다.
+        self.account = AccountManager(self.acc_no, self.acc_flag)
+        
+        print(f"✅ API 연결 및 계좌 설정 완료")
+        print(f"   - 접속 계좌: {self.acc_no} (상품코드: {self.acc_flag})")
+        
+        # [자동화 기능] 가동 직후 현재 예수금 및 D+2 결제 예정금액 확인
+        deposit_data = self.account.get_expected_deposit()
+        if deposit_data:
+            print(f"   - 현재 예수금: {deposit_data['current_deposit']:,}원")
+            print(f"   - D+2 예정예수금: {deposit_data['d2_deposit']:,}원 (실질 매매 가능금)")
+
+        # 엔진 초기화
         self.builder = UniverseBuilder()
         self.screener = DynamicScreener()
-        self.manager = None # 실시간 감시는 타깃이 정해진 후 시작
+        self.manager = None 
         
     def get_refresh_interval(self):
         """현재 시간에 따라 최적의 종목 갱신 주기를 반환합니다."""
         now = datetime.now()
-        curr_time = now.hour * 100 + now.minute # 예: 9시 5분 -> 905
+        curr_time = now.hour * 100 + now.minute 
 
         if 900 <= curr_time < 930:
-            return 120  # 2분 (장 초반 초정밀 감시)
+            return 120  # 2분
         elif 930 <= curr_time < 1030:
-            return 300  # 5분 (추세 확인)
-        elif 1430 <= curr_time < 1530:
-            return 300  # 5분 (장 마감 수급)
+            return 300  # 5분
         else:
-            return 600  # 10분 (횡보 구간)
+            return 600  # 10분
         
     def run(self):
         """봇 메인 루프 실행"""
-        
-        # 1단계: 청정 유니버스 구축 (장 시작 전 1회 실행)
-        # 이미 파일이 있다면 load_universe()를 통해 가져옵니다.
-        print("\n[Step 1] 종목 유니버스 확인 중...")
         universe = self.builder.load_universe()
         if not universe:
             print("❌ 유니버스 구축 실패.")
             return
 
-        # 무한 루프: 주기적으로 종목을 갱신하며 무한 감시
         while True:
             try:
-                # 갱신 주기 결정
+                # 통신 제한 횟수 체크
+                remain_count = self.api.obj_cybos.GetLimitRemainCount(1)
+                if remain_count < 5:
+                    wait_time = self.api.obj_cybos.LimitRequestRemainTime
+                    time.sleep(wait_time / 1000)
+
                 interval = self.get_refresh_interval()
-                # [Step 2] 현재 시점의 주도주 20개 포착
-                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔍 주도주 탐색 및 리스트 갱신 시작...")
+                
+                # [Step 2] 주도주 포착
+                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔍 타깃 종목 스캐닝...")
                 targets = self.screener.run_screener(top_n=20)
                 
                 if not targets:
-                    print("⚠️ 조건에 맞는 종목이 없습니다. 30초 후 재시도합니다.")
                     time.sleep(30)
                     continue
 
-                # [Step 3] 실시간 감시 시작
-                # 기존에 감시 중이던 종목이 있다면 구독 해제(Unsubscribe)
+                # [Step 3] 실시간 감시 엔진 교체
                 if self.manager:
                     self.manager.stop_monitoring()
                 
-                # 새 종목으로 매니저 생성
-                self.manager = RealtimeManager(targets)
-                self.manager.start_subscribing() # 이 함수는 구독만 하고 바로 리턴해야 함
+                # RealtimeManager에 식별된 계좌 정보를 전달하여 매매 준비
+                self.manager = RealtimeManager(targets, self.acc_no, self.acc_flag)
+                self.manager.start_subscribing() 
 
-                print(f"✅ 새 타깃 {len(targets)}종목 감시 시작 (갱신 주기: {interval//60}분)")
-
-                # 💡 지정된 시간 동안 이벤트를 수신하며 대기
                 self.wait_and_monitor(interval)
 
             except KeyboardInterrupt:
                 self.stop()
                 break
             except Exception as e:
-                print(f"❌ 운영 중 예외 발생: {e}")
+                print(f"❌ 시스템 예외 발생: {e}")
                 time.sleep(10)
     
     def wait_and_monitor(self, duration):
-        """정해진 시간 동안 윈도우 메시지를 펌핑하며 실시간 데이터를 받습니다."""
         start_time = time.time()
         while time.time() - start_time < duration:
-            # 실시간 이벤트를 처리하기 위한 핵심 함수
             pythoncom.PumpWaitingMessages()
             time.sleep(0.01)
             
     def stop(self):
-        """시스템 종료 및 자원 해제"""
         if self.manager:
             self.manager.stop_monitoring()
-        print("\n==================================================")
-        print(f"   👋 시스템 종료 완료 (종료시간: {datetime.now().strftime('%H:%M:%S')})")
-        print(f"==================================================")
+        print(f"\n🛑 시스템 종료 (시간: {datetime.now().strftime('%H:%M:%S')})")
 
 if __name__ == "__main__":
     bot = TradingBot()

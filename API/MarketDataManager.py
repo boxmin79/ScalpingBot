@@ -1,5 +1,8 @@
+import path_finder
 import win32com.client
 import time
+from API.Daishin.CpAPI import CreonAPI
+
 
 # 1. 코스닥 실시간 이벤트를 처리할 핸들러 클래스
 class KOSDAQStatusHandler:
@@ -51,10 +54,12 @@ class MarketDataManager:
     단일 종목, 다중 종목, 상세 호가 정보를 효율적으로 관리합니다.
     """
     def __init__(self):
+        self.creon = CreonAPI()
+        
         # 1. 단일 종목 시세 (StockMst)
         self.obj_mst = win32com.client.Dispatch("DsCbo1.StockMst")
         # 2. 다중 종목 시세 (StockMstM - 최대 200개)
-        self.obj_mst_m = win32com.client.Dispatch("CpSysDib.StockMstM")
+        self.obj_mst_m = win32com.client.Dispatch("Dscbo1.StockMstM")
         # 3. 상세 호가 및 기술적 지표 (StockMst2)
         self.obj_mst_2 = win32com.client.Dispatch("DsCbo1.StockMst2")
         self.obj_adr = win32com.client.Dispatch("Dscbo1.StockAdR")
@@ -94,67 +99,91 @@ class MarketDataManager:
             print("[시스템] 실시간 시장 현황 구독 해지")
             
     def get_chart_data(self, 
-                       stk_code, 
-                       target_count, 
+                       stk_code:str='', 
+                       req_type:str='2',
+                       end_date:int=0,
+                       start_date:int=20250101, 
+                       target_count:int=1,
                        chart_type='D', 
-                       cycle=1, 
-                       req_type='2'):
-        """
-        갯수 기준으로 차트 데이터를 조회하여 리스트로 반환합니다.
-        code: 종목코드 (주식 'A...', 업종 'U...', ELW 'J...')
-        target_count: 총 요청할 데이터 개수
-        chart_type: 'D'(일), 'W'(주), 'M'(월), 'm'(분), 'T'(틱)
-        cycle: 주기 (분차트에서 5분봉이면 5 입력)
-        req_type: '1'(기간), '2'(개수) - 여기선 개수 기준 기본
+                       cycle=1,
+                       adjusted_flag:str='1', # 1: Adjusted<ctrl63>Stock Price 
+                       mkt_type:str='K'
+                       ):
+        """_summary_
+
+        Args:
+            stk_code (str, optional): _description_. Defaults to ''.
+            req_type (str, optional): _description_. Defaults to '2'.
+            end_date (int, optional): _description_. Defaults to 0.
+            start_date (int, optional): _description_. Defaults to 20250101.
+            target_count (int, optional): _description_. Defaults to 1.
+            chart_type (str, optional): _description_. Defaults to 'D'.
+            cycle (int, optional): _description_. Defaults to 1.
+            adjusted_flag (str, optional): _description_. Defaults to '1'.
+
+        Returns:
+            _type_: _description_
         """
         # 1. 요청 필드 설정 (0:날짜, 1:시간, 2:시가, 3:고가, 4:저가, 5:종가, 8:거래량)
         # 중요: GetDataValue는 필드값의 오름차순 인덱스로 반환됨
-        fields = [0, 1, 2, 3, 4, 5, 8] 
+        fields = [0, 1, 2, 3, 4, 5, 8, 9] 
         
         self.obj_chart.SetInputValue(0, stk_code)
-        self.obj_chart.SetInputValue(1, req_type)    # '1':기간, '2':개수
-        self.obj_chart.SetInputValue(4, target_count)     # 요청 개수
+        self.obj_chart.SetInputValue(1, ord(req_type))    # '1':기간, '2':개수
+        if req_type == '1':
+            self.obj_chart.SetInputValue(2, end_date)    
+            self.obj_chart.SetInputValue(3, start_date)
+        elif req_type == '2':
+            self.obj_chart.SetInputValue(4, target_count)     # 요청 개수
         self.obj_chart.SetInputValue(5, fields)           # 필드 배열
-        self.obj_chart.SetInputValue(6, chart_type)  # 차트 구분
+        self.obj_chart.SetInputValue(6, ord(chart_type))  # 차트 구분
         self.obj_chart.SetInputValue(7, cycle)            # 주기
-        self.obj_chart.SetInputValue(9, '1')         # 수정 주가 반영
+        self.obj_chart.SetInputValue(9, adjusted_flag)    # 수정 주가 반영
+        self.obj_chart.SetInputValue(12, ord(mkt_type))    # 수정 주가 반영
 
         results = []
         current_count = 0
-
+        
         while current_count < target_count:
+            
+            remain_count = self.creon.obj_cybos.GetLimitRemainCount(1)
+            # print(f"남은 요청 횟수: {remain_count}")
             # 2. 데이터 요청
-            ret = self.obj_chart.BlockRequest()
+            if remain_count > 0:
+                ret = self.obj_chart.BlockRequest()
+            else:
+                remain_time = round(self.creon.obj_cybos.LimitRequestRemainTime / 1000) + 0.5
+                time.sleep(remain_time)
+                ret = self.obj_chart.BlockRequest()
+                
             if ret != 0:
-                print(f"조회 실패 (에러코드: {ret})")
-                break
+                    print(f"조회 실패 (에러코드: {ret})")
+                    break
 
             # 3. 헤더 정보 확인
             recv_count = self.obj_chart.GetHeaderValue(3) # 실제 수신 개수
-            field_cnt = self.obj_chart.GetHeaderValue(1)  # 요청한 필드 개수
-            
-            # 4. 데이터 추출
+            fields_array = ('date', 'time', 'open', 'high', 'low', 'close', 'vol', 'amt')
+            # fields_array = self.obj_chart.GetHeaderValue(2) # 필드 배열
+            # 4. 데이터 추출 (중첩 루프 사용)
             for i in range(recv_count):
-                item = {
-                    'date': self.obj_chart.GetDataValue(0, i),   # 날짜(0)
-                    'time': self.obj_chart.GetDataValue(1, i),   # 시간(1)
-                    'open': self.obj_chart.GetDataValue(2, i),   # 시가(2)
-                    'high': self.obj_chart.GetDataValue(3, i),   # 고가(3)
-                    'low': self.obj_chart.GetDataValue(4, i),    # 저가(4)
-                    'close': self.obj_chart.GetDataValue(5, i),  # 종가(5)
-                    'vol': self.obj_chart.GetDataValue(6, i),    # 거래량(8) - 인덱스는 오름차순임
-                }
+                item = {}
+                # fields_array의 인덱스(j)와 GetDataValue의 필드 인덱스가 일치함을 활용
+                for j in range(len(fields_array)):
+                    key = fields_array[j]               # 예: '날짜', '시간', '시가' ...
+                    value = self.obj_chart.GetDataValue(j, i) # j번째 필드의 i번째 데이터
+                    item[key] = value
+                
                 results.append(item)
             
             current_count += recv_count
-            print(f"현재 {current_count}개 수신 완료...")
+            # print(f"현재 {current_count}개 수신 완료...")
 
             # 5. 연속 데이터 유무 확인
             if not self.obj_chart.Continue or current_count >= target_count:
                 break
             
             # TR 과부하 방지 (연속 요청 시 짧은 휴식)
-            time.sleep(0.1)
+            time.sleep(1)
 
         return results
     
@@ -378,3 +407,11 @@ class MarketDataManager:
             results.append(item)
             
         return results
+    
+if __name__ == "__main__":
+    from datetime import datetime, timedelta
+    mdm = MarketDataManager()
+    
+    data = mdm.get_chart_data("A000150", req_type='2', target_count=20)
+    print(data)
+    

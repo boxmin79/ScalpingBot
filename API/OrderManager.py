@@ -1,6 +1,6 @@
 import win32com.client
 
-class CpOrderManager:
+class OrderManager:
     """
     주식 신규 주문, 정정, 취소를 담당하는 클래스
     """
