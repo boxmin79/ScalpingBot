@@ -3,68 +3,67 @@ import logging
 import logging.handlers
 import queue
 import threading
-import time
-from datetime import datetime  # 날짜 처리를 위해 추가
-from Util.TelegramBot import TelegramBot #
+from datetime import datetime
+from Util.TelegramBot import TelegramBot
+
+# 🎯 텔레그램 전송 전용 핸들러 정의
+class TelegramLogHandler(logging.Handler):
+    def __init__(self, tel_bot):
+        super().__init__()
+        self.tel_bot = tel_bot
+
+    def emit(self, record):
+        # 🎯 레코드에 'send_tg' 속성이 있거나 레벨이 ERROR 이상일 때만 전송
+        send_tg = getattr(record, 'send_tg', False)
+        if send_tg or record.levelno >= logging.ERROR:
+            msg = self.format(record)
+            # 이미 리스너 쓰레드 내부이므로 여기서 직접 호출해도 메인 루프에 영향 없음
+            self.tel_bot.send_message(msg)
 
 class AsyncLogger:
     def __init__(self):
         self.cfg = path_finder.get_cfg()
-        # 1. 로그 메시지를 담을 큐 생성
         self.log_queue = queue.Queue(-1)
-        
-        # 1. 오늘 날짜 가져오기 (예: 2026-03-31)
         today = datetime.now().strftime("%Y-%m-%d")
-            
-        # 3. 파일명에 날짜 적용
         self.logs_path = self.cfg.LOGS_DIR / f"trading_bot_{today}.log"
         
-        # 2. 실제 로그를 처리할 핸들러들 정의
-        # 콘솔 출력용
+        # 1. 텔레그램 봇 초기화
+        self.tel_bot = TelegramBot()
+        
+        # 2. 핸들러 설정
         console_handler = logging.StreamHandler()
-        # 파일 저장용
         file_handler = logging.FileHandler(self.logs_path, encoding='utf-8')
+        telegram_handler = TelegramLogHandler(self.tel_bot) # 🎯 텔레그램 핸들러 추가
         
         formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s')
         console_handler.setFormatter(formatter)
         file_handler.setFormatter(formatter)
+        telegram_handler.setFormatter(logging.Formatter('%(message)s')) # 텔레그램은 메시지만
 
-        # 3. 큐 리스너 설정 (백그라운드에서 핸들러들을 실행)
+        # 3. 큐 리스너에 모든 핸들러 등록
         self.listener = logging.handlers.QueueListener(
             self.log_queue, 
             console_handler, 
-            file_handler
+            file_handler,
+            telegram_handler
         )
         
-        # 4. 메인 로거 설정 (큐 핸들러만 연결)
+        # 4. 로거 설정
         self.logger = logging.getLogger("TradingBot")
         self.logger.setLevel(logging.INFO)
         self.logger.addHandler(logging.handlers.QueueHandler(self.log_queue))
         
-        # 텔레그램 봇 연동
-        self.tel_bot = TelegramBot()
-        
-        # 리스너 시작
         self.listener.start()
 
     def info(self, msg, send_tg=True):
-        self.logger.info(msg)
-        if send_tg:
-            # 텔레그램 전송도 별도 스레드로 돌려야 메인 루프가 안 멈춥니다.
-            threading.Thread(target=self.tel_bot.send_message, args=(f"{msg}",), daemon=True).start()
+        # 🎯 extra를 통해 텔레그램 전송 여부를 핸들러에 전달
+        self.logger.info(msg, extra={'send_tg': send_tg})
 
     def error(self, msg):
-        self.logger.error(msg)
-        threading.Thread(target=self.tel_bot.send_message, args=(f"🚨 **[ERROR]** {msg}",), daemon=True).start()
+        # ERROR 레벨은 핸들러 설정에 의해 자동으로 텔레그램 전송됨
+        self.logger.error(f"🚨 **[ERROR]** {msg}")
 
     def stop(self):
-        """프로그램 종료 시 리스너 정지"""
-        self.info("프로그램 종료")
+        self.info("시스템 종료 중...", send_tg=True)
+        self.tel_bot.stop() # 봇의 stop 메서드 호출
         self.listener.stop()
-        
-if __name__ == "__main__":
-    logger = AsyncLogger()
-    logger.info("테스트 메시지")
-    # 메시지가 전송될 때까지 잠시 대기 (테스트용)
-    time.sleep(2)
-    logger.stop()

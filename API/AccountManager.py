@@ -58,8 +58,6 @@ class AccountManager:
         self.obj_portfolio_status = win32com.client.Dispatch("CpTrade.CpTd6033")       # 계좌 잔고 및 평가 현황 v
         self.obj_daily_profit_loss = win32com.client.Dispatch("CpTrade.CpTd6032")      # 당일 매매 손익(체결 기준) v
 
-        self.acc_no = acc_no
-        self.acc_flag = acc_flag
     
     def get_expected_deposit(self):
         """
@@ -488,16 +486,9 @@ class AccountManager:
         
         
 if __name__ == "__main__":
-    obj_td_util = win32com.client.Dispatch("CpTrade.CpTdUtil")
-    init_status = obj_td_util.TradeInit(0)
-    if init_status == 0:
-        acc_no = obj_td_util.AccountNumber[0]
-        acc_flag = obj_td_util.GoodsList(acc_no, 1)[0]
-        print(f"acc_no: {acc_no}, acc_flag: {acc_flag}")
-        
-    am = AccountManager(acc_no, acc_flag)
+    am = AccountManager()
     # am.get_balance_data()
-    data = am.get_expected_deposit()
+    data = am.get_profit_loss_data()
     print(data)
     
         
