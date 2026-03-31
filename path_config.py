@@ -3,6 +3,9 @@ from pathlib import Path
 # BASE_DIR
 BASE_DIR = BASE_DIR = Path(__file__).resolve().parent
 
+# .env
+ENV_PATH = BASE_DIR / '.env'
+
 # DATA_DIR
 DATA_DIR = BASE_DIR / 'data'
 CODE_DIR = DATA_DIR / 'code'

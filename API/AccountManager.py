@@ -18,7 +18,32 @@ class AccountManager:
     계좌별 잔고 평가현황: CpTrade.CpTd6033
     체결기준 주식 당일매매손익:  CpTrade.CpTd6032
     """
-    def __init__(self, acc_no, acc_flag):
+    def __init__(self, acc_no:str=None, acc_flag:str=None):
+        # 기본 오프젝트 로드
+        self.cybos = win32com.client.Dispatch("CpUtil.CpCybos")
+        self.util = win32com.client.Dispatch("CpTrade.CpTdUtil")
+        
+        if self.cybos.IsConnect:
+            # print("CreonPlus에 연결되었습니다.")
+            # print(f"주문 초기화: type: {type(ti)}, value: {ti}")
+            if not self.util.TradeInit(0):
+                # print("주문 초기화 완료")
+                if acc_no is not None:
+                    self.acc_no = acc_no  # 계좌번호 설정 <class 'str'>
+                else: 
+                    self.acc_no = self.util.AccountNumber[0]
+                    print(f"계좌번호: {self.acc_no}")
+                    
+                if acc_flag is not None:
+                    self.acc_flag = acc_flag  
+                else:
+                    self.acc_flag = self.util.GoodsList(self.acc_no, 1)[0] # 상품구분코드 설정 <class 'str'>
+                    print(f"상품관리구분코드: {self.acc_flag}")   
+            else:
+                print("주문 초기화 실패")
+        else:
+            print("CreonPlus에 연결되지 않았습니다.")
+            
         # 1. 자금 및 매매 가능 확인 관련
         self.obj_deposit_settlement = win32com.client.Dispatch("CpTrade.CpTd0732")     # 결제예정 예수금 가계산
         self.obj_buyable = win32com.client.Dispatch("CpTrade.CpTdNew5331A")          # 매수 가능 금액/수량 조회 v
@@ -57,6 +82,7 @@ class AccountManager:
             'account_no': self.obj_deposit_settlement.GetHeaderValue(0),
             'account_name': self.obj_deposit_settlement.GetHeaderValue(2),
             'current_deposit': self.obj_deposit_settlement.GetHeaderValue(3),   # 현재 예수금
+            'receivables': self.obj_deposit_settlement.GetHeaderValue(4),
             
             # 오늘 매수/매도 합계 (정산용)
             'today_sell': self.obj_deposit_settlement.GetHeaderValue(48),       # 금일 합계 매도금
@@ -114,7 +140,7 @@ class AccountManager:
             'available_deposit': self.obj_buyable.GetHeaderValue(47), # 가능예수금
             
             # --- 수량 관련 (query_type '2'일 때 정확) ---
-            'cach_buyable_qty': self.obj_buyable.GetHeaderValue(18),  # 🎯 현금주문 가능수량 (가장 중요)
+            'cash_buyable_qty': self.obj_buyable.GetHeaderValue(18),  # 🎯 현금주문 가능수량 (가장 중요)
             
         }
 
@@ -470,7 +496,9 @@ if __name__ == "__main__":
         print(f"acc_no: {acc_no}, acc_flag: {acc_flag}")
         
     am = AccountManager(acc_no, acc_flag)
-    am.get_balance_data()
+    # am.get_balance_data()
+    data = am.get_expected_deposit()
+    print(data)
     
         
         

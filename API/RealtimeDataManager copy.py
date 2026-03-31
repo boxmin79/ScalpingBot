@@ -21,45 +21,44 @@ class RealtimeHandler:
             # 🎯 체결강도 계산 (분모가 0인 경우 예외 처리)
             strength = (vol_buy / vol_sell * 100) if vol_sell > 0 else 0
             
-            # 🎯 안전한 데이터 추출을 위한 헬퍼 (None 방지)
-            def get_val(idx):
-                v = self.obj.GetHeaderValue(idx)
-                return v if v is not None else 0
-            
             data.update({
-                'code': self.obj.GetHeaderValue(0),      # 종목코드
-                'name': self.obj.GetHeaderValue(1),      # 종목명
-                'diff_val': self.obj.GetHeaderValue(2),  # 전일대비 금액
-                'time': self.obj.GetHeaderValue(3),      # 시간 (HHMM)
-                'open': self.obj.GetHeaderValue(4),      # 시가
-                'high': self.obj.GetHeaderValue(5),      # 고가
-                'low': self.obj.GetHeaderValue(6),       # 저가
-                'ask': self.obj.GetHeaderValue(7),       # 매도호가
-                'bid': self.obj.GetHeaderValue(8),       # 매수호가
-                'cum_vol': self.obj.GetHeaderValue(9),   # 누적거래량
-                'cum_amt': self.obj.GetHeaderValue(10),  # 누적거래대금
-                'current': self.obj.GetHeaderValue(13),  # 현재가 (또는 예상체결가)
-                'side': chr(get_val(14)) if get_val(14) else '0',# 체결상태 ('1':매수, '2':매도)
-                'tick_vol': self.obj.GetHeaderValue(17), # 순간 체결수량
-                'time_sec': self.obj.GetHeaderValue(18), # 시간(초)
-                'expect_flag': chr(get_val(19)) if get_val(19) else '0', # 예상체결가 구분 ('1':동시호가, '2':장중)
-                'market_stat': chr(get_val(20)) if get_val(20) else '0', # 장구분플래그 ('1':장전, '2':장중...)
-                'diff_stat': chr(get_val(22)) if get_val(22) else '0',   # 대비부호 ('1':상한, '2':상승...)
-                'lp_rate': self.obj.GetHeaderValue(25),  # LP보유율 추가 권장
-                'vol_sell': vol_sell,
-                'vol_buy': vol_buy,
-                'strength': round(strength, 2), # 소수점 2자리까지 반올림
+                '종목코드': self.obj.GetHeaderValue(0),      # 종목코드
+                '종목명': self.obj.GetHeaderValue(1),       # 종목명
+                '전일대비': self.obj.GetHeaderValue(2),     # 전일대비 금액
+                '시간': self.obj.GetHeaderValue(3),         # 시간 (HHMM)
+                '시가': self.obj.GetHeaderValue(4),         # 시가
+                '고가': self.obj.GetHeaderValue(5),         # 고가
+                '저가': self.obj.GetHeaderValue(6),         # 저가
+                '매도호가': self.obj.GetHeaderValue(7),       # 매도호가
+                '매수호가': self.obj.GetHeaderValue(8),       # 매수호가
+                '누적거래량': self.obj.GetHeaderValue(9),     # 누적거래량
+                '누적거래대금': self.obj.GetHeaderValue(10),  # 누적거래대금(거래소:만원, 코스닥:천원)
+                '현재가': self.obj.GetHeaderValue(13),          # 현재가 (또는 예상체결가)
+                '체결상태': chr(self.obj.GetHeaderValue(14)),   # 체결상태 ('1':매수, '2':매도)
+                '순간체결수량': self.obj.GetHeaderValue(17),    # 순간체결수량
+                '시간': self.obj.GetHeaderValue(18),           # 시간(초)
+                '예상체결가구분플래그': chr(self.obj.GetHeaderValue(19)), # 예상체결가 구분 ('1':동시호가, '2':장중)
+                '장구분플래그': chr(self.obj.GetHeaderValue(20)), # 장구분플래그 ('1':장전, '2':장중...)
+                '장전시간외거래량': self.obj.GetHeaderValue(21),  # 장전시간외거래량
+                '대비부호': chr(self.obj.GetHeaderValue(22)),   # 대비부호 ('1':상한, '2':상승)
+                'LP보유수량': self.obj.GetHeaderValue(23),  # LP보유수량 
+                'LP보유수량대비': self.obj.GetHeaderValue(24),  # LP보유수량대비
+                'LP보유율': self.obj.GetHeaderValue(25),  # LP보유율
+                '체결상태': chr(self.obj.GetHeaderValue(26)),   # 체결상태 ('1':매수, '2':매도)
+                '누적매도체결수량': vol_sell, # 누적매도체결수량
+                '누적매수체결수량': vol_buy,  # 누적매수체결수량,
+                '체결강도': round(strength, 2) # 소수점 2자리까지 반올림
             })
 
         # 2. StockJpBid: 실시간 10단계 호가 잔량
         elif self.name == 'jpbid':
             # 기본 정보 추출 (인덱스 수정)
             data.update({
-                'time': self.obj.GetHeaderValue(1),           # 시간
-                'total_ask_vol': self.obj.GetHeaderValue(23),  # 총매도잔량 (기존 5번은 1차잔량임)
-                'total_bid_vol': self.obj.GetHeaderValue(24),  # 총매수잔량 (기존 6번은 1차잔량임)
-                'side_over_ask': self.obj.GetHeaderValue(25),  # 시간외 총매도잔량
-                'side_over_bid': self.obj.GetHeaderValue(26),  # 시간외 총매수잔량
+                '시간': self.obj.GetHeaderValue(1),           # 시간
+                '총매도잔량': self.obj.GetHeaderValue(23),  # 총매도잔량 (기존 5번은 1차잔량임)
+                '총매수잔량': self.obj.GetHeaderValue(24),  # 총매수잔량 (기존 6번은 1차잔량임)
+                '시간외총매도잔량': self.obj.GetHeaderValue(25),  # 시간외 총매도잔량
+                '시간외총매수잔량': self.obj.GetHeaderValue(26),  # 시간외 총매수잔량
             })
 
             # 10단계 호가 및 잔량 데이터 추출 (GetHeaderValue 사용 필수)
@@ -82,23 +81,23 @@ class RealtimeHandler:
                 'bids': bids, 
                 'ask_vols': ask_vols, 
                 'bid_vols': bid_vols,
-                'mid_price': self.obj.GetHeaderValue(69) # 중간가격
+                '중간가격': self.obj.GetHeaderValue(69) # 중간가격
             })
 
         # 3. StockJpBidCnld: 통합(KRX+NXT) 10단계 호가 잔량 실시간 수신
         elif self.name == 'jpbidcnld':
             # 1. 공통 헤더 정보 추출
             data.update({
-                'time': self.obj.GetHeaderValue(1),           # 시간
-                'total_volume': self.obj.GetHeaderValue(2),   # 거래량
-                'total_ask_vol': self.obj.GetHeaderValue(23),  # 통합 총 매도잔량
-                'total_bid_vol': self.obj.GetHeaderValue(24),  # 통합 총 매수잔량
+                '시간': self.obj.GetHeaderValue(1),           # 시간
+                '거래량': self.obj.GetHeaderValue(2),   # 거래량
+                '총매도잔량': self.obj.GetHeaderValue(23),  # 통합 총 매도잔량
+                '총매수잔량': self.obj.GetHeaderValue(24),  # 통합 총 매수잔량
                 
                 # KRX vs NXT 총잔량 비교 (차익거래/수급 분석용)
-                'krx_total_ask': self.obj.GetHeaderValue(89),  # KRX 총 매도잔량
-                'krx_total_bid': self.obj.GetHeaderValue(90),  # KRX 총 매수잔량
-                'nxt_total_ask': self.obj.GetHeaderValue(114), # NXT 총 매도잔량
-                'nxt_total_bid': self.obj.GetHeaderValue(115), # NXT 총 매수잔량
+                'KRX총매도호가잔량': self.obj.GetHeaderValue(89),  # KRX 총 매도잔량
+                'KRX총매수호가잔량': self.obj.GetHeaderValue(90),  # KRX 총 매수잔량
+                'NXT총매도호가잔량': self.obj.GetHeaderValue(114), # NXT 총 매도잔량
+                'NXT총매수호가잔량': self.obj.GetHeaderValue(115), # NXT 총 매수잔량
             })
 
             # 2. 통합 10단계 호가 및 잔량 추출 루프
@@ -119,8 +118,8 @@ class RealtimeHandler:
 
             # 3. LP 잔량 합계 (ETF/ELW 매매 시 필수)
             data.update({
-                'lp_total_ask': self.obj.GetHeaderValue(67),
-                'lp_total_bid': self.obj.GetHeaderValue(68)
+                'LP매도잔량': self.obj.GetHeaderValue(67),
+                'LP매수잔량': self.obj.GetHeaderValue(68)
             })
 
         # 4. StockMember: 실시간 거래원 매매 정보 (매도/매수 상위 5개사)

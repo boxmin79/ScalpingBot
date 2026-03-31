@@ -1,7 +1,7 @@
 import path_finder
 import win32com.client
 import time
-from API.Daishin.CpAPI import CreonAPI
+from API.CpAPI import CreonAPI
 
 
 # 1. 코스닥 실시간 이벤트를 처리할 핸들러 클래스
@@ -366,7 +366,7 @@ class MarketDataManager:
         # 1. 입력 데이터 설정 (구분자 ',' 사용)
         codes_str = ",".join(code_list)
         self.obj_mst_2.SetInputValue(0, codes_str)
-        self.obj_mst_2.SetInputValue(1, market_type) # char 타입이므로 ord() 사용
+        self.obj_mst_2.SetInputValue(1, ord(market_type)) # char 타입이므로 ord() 사용
 
         # 2. 데이터 요청
         ret = self.obj_mst_2.BlockRequest()

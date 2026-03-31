@@ -3,6 +3,7 @@ import os
 import sys
 from datetime import datetime
 from API.MarketScanner import MarketScanner
+from API.MarketDataManager import MarketDataManager # MarketDataManager 임포트
 from Util.FileManager import FileManager
 
 class DynamicScreener:
@@ -11,6 +12,7 @@ class DynamicScreener:
         
         # API 객체들 초기화
         self.mrk_scanner = MarketScanner()
+        self.mdm = MarketDataManager() # 👈 실시간 데이터 보완용 추가
         
         # 2. 파일 매니저 및 1단계 유니버스 로드
         self.file_mgr = FileManager()
@@ -32,114 +34,107 @@ class DynamicScreener:
             return {}
 
     def get_dynamic_threshold(self):
-        """장 초반(09:00~09:10) 거래대금 허들 완화"""
+        """시간대별로 거래대금 허들을 계단식으로 조정"""
         now = datetime.now()
-        if now.hour == 9 and now.minute <= 10:
-            return 5000000000   # 50억
-        else:
-            return 20000000000  # 200억
+        curr_time = now.hour * 100 + now.minute
 
-    def run_screener(self, top_n=20):
+        if curr_time <= 910:
+            return 5000000000   # 09:10 이전: 50억 (시가 형성기)
+        elif curr_time <= 940:
+            return 10000000000  # 09:10 ~ 09:40: 100억 (주도주 결정기)
+        elif curr_time <= 1030:
+            return 15000000000  # 09:40 ~ 10:30: 150억 (추세 확인기)
+        else:
+            return 20000000000  # 10:30 이후: 200억 (안정기)
+
+    def run_screener(self):
         """
-        CpTopVolume 데이터를 받아와서 1단계 유니버스와 교집합을 구합니다.
+        [개선된 3단계 로직]
+        1. 7043/7034를 통해 수급 및 가격 전략 후보군을 1차로 뽑습니다.
+        2. 후보군 중 유니버스에 포함된 종목들만 추려 StockMst2로 정확한 '거래대금'을 조회합니다.
+        3. 실제 거래대금(원 단위)과 수급 비중을 최종 비교하여 반환합니다.
         """
-        if not self.universe_dict:
+        # [1단계] 기초 데이터 수집
+        cache = self.mrk_scanner.update_integrated_selection()
+        whale_pass_dict = {
+            s['code']: s for s in cache['7034'] 
+            if s.get('buy_ratio', 0) >= 65.0
+        }
+
+        # [2단계] 유니버스에 있고 수급이 통과된 1차 후보 리스트업
+        # [2단계] 전략별 히트(중복) 수 계산
+        hit_counts = {}
+        initial_candidates = []
+        for stock_7043 in cache['7043']:
+            code = stock_7043['code']
+            if code in self.universe_dict and code in whale_pass_dict:
+                initial_candidates.append(code)
+                hit_counts[code] = hit_counts.get(code, 0) + 1 # 카운팅 수행
+        
+        # 중복 제거
+        initial_candidates = list(set(initial_candidates))
+        
+        if not initial_candidates:
             return []
 
-        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔍 2단계: 입체적 주도주 스캐닝 시작...")
-        
-        # 1. 회원님의 CpTopVolume을 이용해 서버 공식 랭킹 데이터를 가져옵니다.
-        # (앞서 보여주신 {'rank': 1, 'code': 'A005930', ...} 형태의 리스트가 반환된다고 가정)
-        raw_top_data = self.mrk_scanner.get_top_volume_list()
-        # print(raw_top_data)
-        
-        # [B] 20일 신고가 돌파 리스트 (거래대금 순 정렬)
-        breakout_list = self.mrk_scanner.get_breakout_list(market='0', criteria='6', sort_by=61, period='2')
-        breakout_codes = {s['code'] for s in breakout_list} # 빠른 검색을 위한 set
-        
-        # [C] 큰손 매수 집중 리스트 (4천만원 이상, 코스닥 중심)
-        whale_list = []
-        kospi_whale_list = self.mrk_scanner.get_whale_ratio(market='1', amount='4', criteria='1')
-        kosdaq_whale_list = self.mrk_scanner.get_whale_ratio(market='2', amount='4', criteria='1'
-                                                    )
-        whale_list.extend(kospi_whale_list)
-        whale_list.extend(kosdaq_whale_list)
-        
-        whale_info = {s['code']: s['buy_ratio'] for s in whale_list}
-        
-        min_amount = self.get_dynamic_threshold()
-        filtered_targets = []
+        # [3단계] StockMst2를 통해 정확한 거래대금(원 단위) 가져오기
+        # 한 번에 최대 110개까지 조회 가능하므로 스캘핑 후보군 처리에 충분함
+        accurate_data = self.mdm.get_hoga_detail(initial_candidates)
+        if not accurate_data:
+            return []
 
-        # 2. 필터링 시작
-        for stock in raw_top_data:
-            code = stock.get('code', '')
-            
-            diff_rate = float(stock.get('diff_rate', 0.0))
-            raw_amount = int(stock.get('amount', 0))
-            # [핵심 1] 유니버스에 없는 종목 무조건 버리기 & 시장 정보 가져오기
-            univ_info = self.universe_dict.get(code)
-            # print(f"unive_info: {univ_info}")
-            if not univ_info:
-                continue
-                
-            # [핵심 2] ★★★ 시장별 거래대금 단위 보정 ★★★
-            market = univ_info.get('market', 'KOSPI')
-            
-            if market == 'KOSPI':
-                actual_amount = raw_amount * 10000  # 코스피: 만원 -> 원
-            else: # 'KOSDAQ'
-                actual_amount = raw_amount * 1000   # 코스닥: 천원 -> 원
-            
-            # [핵심 3] 등락률 및 실제 거래대금(actual_amount) 조건 검사
-            if not (3.0 <= diff_rate <= 20.0 and actual_amount >= min_amount):
-                continue
-                
+        final_candidates = []
+        min_amount_threshold = self.get_dynamic_threshold()
 
-            # [점수화] 신고가 돌파 여부와 큰손 매수비중 가중치 부여
-            score = 0
-            is_breakout = code in breakout_codes
-            whale_buy_ratio = whale_info.get(code, 50.0) # 정보 없으면 기본 50%
+        for data in accurate_data:
+            code = data['code']
+            # StockMst2의 amount는 시장 불문 '원' 단위임
+            actual_amount = data['amount'] 
             
-            if is_breakout: score += 50  # 신고가 돌파 시 큰 가산점
-            if whale_buy_ratio >= 70: score += 30 # 큰손 매수 압도적일 때 가산점
-            
-            stock.update({
-                'name': univ_info['name'],
-                'actual_amount': actual_amount,
-                'is_breakout': is_breakout,
-                'whale_buy_ratio': whale_buy_ratio,
-                'score': score
+            # 최종 거래대금 허들 체크
+            if actual_amount < min_amount_threshold:
+                continue
+
+            # 최종 리스트 구성
+            whale_info = whale_pass_dict[code]
+            final_candidates.append({
+                'code': code,
+                'name': data['name'],
+                'price': data['current'],
+                'diff_rate': round(((data['current'] - data['open']) / data['open'] * 100), 2) if data['open'] > 0 else 0,
+                'amount_억': round(actual_amount / 100000000, 1),
+                'buy_ratio': whale_info['buy_ratio'],
+                'strength': data['strength'], # StockMst2에서 제공하는 체결강도 추가
+                'hit_count': hit_counts[code], # 👈 다시 추가!
             })
-            filtered_targets.append(stock)
 
-        # 3. 최종 점수(Score) 순으로 정렬하여 가장 유망한 종목 상단 배치
-        filtered_targets.sort(key=lambda x: x['score'], reverse=True)
-
-        return filtered_targets[:top_n]
+        # 정렬: 큰손 비중 순
+        final_candidates.sort(key=lambda x: x['buy_ratio'], reverse=True)
+        return final_candidates
 
 
 # --- 실행 테스트 ---
 if __name__ == "__main__":
+    # 1. 스캐너 객체 생성
     screener = DynamicScreener()
-    targets = screener.run_screener(top_n=20)
-    # print(targets)
-    print(f"조회된 종목 수: {len(targets)}")
-    print("-" * 105)
-    header = (f"{'종목코드':<10}{'종목명':<16}{'현재가':>10}{'대비':>8}{'대비율':>8}"
-            f"{'거래량':>12}{'신고가':>10}{'매수비율':>10}{'점수':>10}")
-    print(header)
-    print("-" * 105)
-    for target in targets:
-        line = (f"{target['code']:<10}  "
-                f"{target['name']:<16}  "
-                f"{target['price']:>10,}  "
-                f"{target['diff']:>8,}  "
-                f"{target['diff_rate']:>8.2f}%  "
-                f"{target['volume']:>12,}  "
-                f"{target['is_breakout']:>10}  "
-                f"{round(target['whale_buy_ratio'], 2):>10}  "
-                f"{target['score']:>10}")
-        print(line)
-    print("-" * 105)    
-
-
+    
+    # 2. 6단계 필터링(가격전략+수급+대금+중복제거+유니버스) 실행
+    final_targets = screener.run_screener()
+    
+    # 3. 결과 리스트 출력
+    print("\n" + "=" * 85)
+    print(f" 🎯 6단계 필터링 합격 종목 리스트 (총 {len(final_targets)}개)")
+    print("-" * 85)
+    print(f"{'종목명':<16}{'현재가':>10}{'등락률':>9}{'거래대금(억)':>14}{'큰손비중':>10}{'전략중복':>8}")
+    print("-" * 85)
+    
+    if not final_targets:
+        print(" 현재 조건(수급 65% 이상 & 거래대금 허들)을 만족하는 종목이 없습니다.")
+    else:
+        for t in final_targets:
+            # 2개 이상의 전략 태그에 중복으로 걸린 종목은 강조 표시 (🚀)
+            
+            print(f"{t['name']:<14}{t['price']:>12,}{t['diff_rate']:>9.2f}%"
+                  f"{t['amount_억']:>14.1f}억{t['buy_ratio']:>11.1f}%")
+    
+    print("=" * 85)
