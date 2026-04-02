@@ -18,10 +18,7 @@ class TelegramBot:
         self.token = os.getenv("TELEGRAM_API")
         self.chat_id = os.getenv("CHAT_ID")
         self.last_update_id = 0
-        
-        # 메인 쓰레드에서 AccountManager 초기화
-        self.am = AccountManager()
-        
+                
         if not self.chat_id:
             print("⚠️ .env에 CHAT_ID가 없어 직접 조회를 시작합니다.")
             self.chat_id = self.fetch_chat_id_from_api()
@@ -45,6 +42,9 @@ class TelegramBot:
         pythoncom.CoInitialize() 
         print("🚀 텔레그램 봇 리스닝 시작...")
         
+        # 🎯 2. [추가] 반드시 COM 환경이 구축된 쓰레드 내부에서 매니저를 생성해야 합니다!
+        self.am = AccountManager()
+        
         while self.is_running:
             try:
                 url = f"https://api.telegram.org/bot{self.token}/getUpdates?offset={self.last_update_id + 1}&timeout=30"
@@ -61,8 +61,8 @@ class TelegramBot:
                 print(f"❌ 리스닝 오류: {e}")
                 time.sleep(5)
         
-        # 쓰레드 종료 시 (실제로는 무한루프지만)
-        # pythoncom.CoUninitialize()
+        # 리스닝 종료 시 COM 해제 (생략 가능하지만 깔끔한 종료를 위해)
+        pythoncom.CoUninitialize()
     
     def stop(self):
         self.is_running = False
@@ -72,6 +72,9 @@ class TelegramBot:
         # 양끝 공백 제거 및 텍스트 정규화
         cmd = command.strip()
 
+        # 🎯 [추가] 봇이 메시지를 정상적으로 수신했는지 터미널에서 확인하기 위한 로그
+        print(f"📨 [텔레그램 수신] 입력된 명령어: {cmd}")
+        
         if cmd in ["/start", "시작", "start"]:
             self.send_message("🤖 트레이딩 봇 가동! 명령어를 입력하세요.")
             

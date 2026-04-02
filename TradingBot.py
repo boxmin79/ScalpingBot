@@ -4,7 +4,6 @@ import sys
 import pythoncom
 from datetime import datetime
 from Screener.UniverseBuilder import UniverseBuilder
-from Screener.DynamicScreener import DynamicScreener
 from Signal.RealtimeManager import RealtimeManager
 from API.CpAPI import CreonAPI
 from API.AccountManager import AccountManager # 🎯 AccountManager 임포트
@@ -47,13 +46,24 @@ class TradingBot:
         # 🎯 메서드로 분리된 실잔고 동기화 호출
         self.trade_budget = 0  # 🎯 초기값 선언
         self.update_budget() # 초기 예산 설정
+        self.set_initial_budget() # 초기 1회 실행
         self.initial_positions = self.sync_account_positions()
             
         # 엔진 초기화
         self.builder = UniverseBuilder()
-        self.screener = DynamicScreener()
         self.manager = None 
-        
+    
+    def set_initial_budget(self):
+        """장 시작 시 총 자산의 1/10을 매매 한도로 고정합니다."""
+        deposit_data = self.account.get_expected_deposit()
+        if deposit_data and deposit_data['d2_deposit'] > 0:
+            # 전체 자산의 약 1/10(9.8%)로 고정
+            self.initial_deposit = deposit_data['d2_deposit']
+            self.trade_budget = int(self.initial_deposit * 0.098)
+            print(f"💰 예산 확정: 총 자산 {self.initial_deposit:,}원 -> 종목당 {self.trade_budget:,}원 고정")
+            return True
+        return False
+       
     def update_budget(self):
         """D+2 예수금을 확인하여 1회 매매 한도(1/10)를 갱신합니다."""
         deposit_data = self.account.get_expected_deposit()
@@ -92,26 +102,18 @@ class TradingBot:
             print("   > 현재 보유 중인 종목이 없습니다.")
             
         return positions
-        
-    def get_refresh_interval(self):
-        """현재 시간에 따라 최적의 종목 갱신 주기를 반환합니다."""
-        now = datetime.now()
-        curr_time = now.hour * 100 + now.minute 
-
-        if 900 <= curr_time < 930:
-            return 120  # 2분
-        elif 930 <= curr_time < 1030:
-            return 300  # 5분
-        else:
-            return 600  # 10분
-        
+                
     def run(self):
         """봇 메인 루프 실행"""
         universe = self.builder.load_universe()
         if not universe:
             self.logger.info("❌ 유니버스 구축 실패.")
             return
-
+        
+        # 리스트에서 종목 코드만 추출하여 타깃 설정
+        targets = universe
+        self.logger.info(f"✅ 유니버스 {len(targets)}종목 로드 완료. 실시간 감시를 시작합니다.")
+        
         while True:
             try:
                 # 🎯 [추가] 장 마감 시각 체크 (15:20)
@@ -128,54 +130,21 @@ class TradingBot:
                     self.stop()
                     break
                 
-                # [Step 2] 타깃 종목 스캐닝 전 예산 최신화
-                if not self.update_budget():
-                    self.logger.info("⚠️ 예수금 확인 불가. 이전 예산을 유지하거나 스킵합니다.")
+                if time.time() - last_budget_update > 300: 
+                    if self.update_budget():
+                        if self.manager:
+                            self.manager.trade_budget = self.trade_budget
+                        last_budget_update = time.time()
+                    
+                if self.manager is None:
+                    # 첫 실행 시에만 생성
+                    self.manager = RealtimeManager(targets, self.acc_no, self.acc_flag, self.trade_budget, self.logger)
+                    self.manager.positions = self.initial_positions # 초기 실잔고 이식
+                    self.manager.om.set_callback(self.manager.on_order_confirmed)
+                    self.manager.start_subscribing()
                 
-                self.logger.info(f"\n[{now.strftime('%H:%M:%S')}] 🔍 스캐닝 (한도: {self.trade_budget:,}원)")
-                targets = self.screener.run_screener()
-                
-                # 통신 제한 횟수 체크
-                remain_count = self.api.obj_cybos.GetLimitRemainCount(1)
-                if remain_count < 5:
-                    wait_time = self.api.obj_cybos.LimitRequestRemainTime
-                    time.sleep(wait_time / 1000)
-
-                interval = self.get_refresh_interval()
-                
-                # [Step 2] 주도주 포착
-                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔍 타깃 종목 스캐닝...")
-                targets = self.screener.run_screener()
-                
-                if not targets:
-                    # 🚨 time.sleep(30) 삭제
-                    # 🎯 [수정] 보유 종목 매도를 위해 메시지 펌프는 돌아가야 함
-                    self.wait_and_monitor(30) 
-                    continue
-
-                # [Step 3] 실시간 감시 엔진 교체
-                if self.manager:
-                    # 기존 포지션 정보를 유지하면서 감시 대상만 업데이트하려면
-                    # stop_monitoring 대신 내부 targets만 교체하는 로직이 필요할 수 있습니다.
-                    # 여기서는 단순 교체 방식을 유지하되 포지션을 인자로 넘겨줄 수 있습니다.
-                    prev_positions = self.manager.positions
-                    self.manager.stop_monitoring()
-                else:
-                    # 🎯 [수정] 첫 실행 시에는 초기화 때 긁어온 실잔고를 사용
-                    prev_positions = self.initial_positions
-                
-                # 🎯 매니저를 생성할 때 self.trade_budget을 인자로 넘겨줍니다.
-                self.manager = RealtimeManager(targets, self.acc_no, self.acc_flag, self.trade_budget, self.logger)
-                
-                # 🎯 중요: 새로 생성된 매니저에 기존 포지션 정보를 복사해줘야 매도가 가능함
-                self.manager.positions = prev_positions
-                
-                # 체결 알림 콜백 연결
-                self.manager.om.set_callback(self.manager.on_order_confirmed)
-                
-                self.manager.start_subscribing() 
-        
-                self.wait_and_monitor(interval)
+                # 메시지 펌프 유지 (실시간 이벤트 수신을 위해 필수)
+                self.wait_and_monitor(10)
 
             except KeyboardInterrupt:
                 self.stop()

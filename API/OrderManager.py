@@ -84,7 +84,21 @@ class OrderManager:
         if ret != 0:
             print(f"New Order Request Failed (Code: {ret})")
             return None
-
+        #################################################
+        # 🎯 [추가] 증권사 서버의 응답 메시지 확인
+        rq_status = self.obj_new_order.GetDibStatus()
+        rq_msg = self.obj_new_order.GetDibMsg1()
+        
+        if rq_status != 0:
+            print(f"❌ [주문 거부] 사유: {rq_msg} (코드: {rq_status})")
+        else:
+            # GetHeaderValue(8)은 주문번호를 가져오는 코드입니다. (인덱스는 API 버전에 따라 다를 수 있음)
+            order_no = self.obj_new_order.GetHeaderValue(8) 
+            if order_no == 0 or order_no == "" or order_no is None:
+                print(f"⚠️ [주문 이상] 전송은 되었으나 주문번호를 받지 못했습니다. 사유: {rq_msg}")
+            else:
+                print(f"✅ [주문 접수] 주문번호: {order_no} | 상태: {rq_msg}")
+        ##################################################                
         order_no = self.obj_new_order.GetHeaderValue(8)
         print(f"New Order Success - Order No: {order_no}")
         return order_no

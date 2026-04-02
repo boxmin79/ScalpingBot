@@ -29,6 +29,8 @@ class AsyncLogger:
         
         # 1. 텔레그램 봇 초기화
         self.tel_bot = TelegramBot()
+        self.tele_thread = threading.Thread(target=self.tel_bot.listen, daemon=True)
+        self.tele_thread.start()
         
         # 2. 핸들러 설정
         console_handler = logging.StreamHandler()

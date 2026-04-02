@@ -38,7 +38,7 @@ class MarketEye:
         # 91 영업이익(ulonglong) - 단위:원
         # 92 매출액영업이익률(float)
         # 93 매출액경상이익률(float)
-        # 94 이사보상비율(float)
+        # 94 이자보상비율(float)
         # 95 결산년월(ulong) - yyyymm
         # 96 분기BPS(ulong) - 분기주당순자산
         # 97 분기매출액증가율(float)
