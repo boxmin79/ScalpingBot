@@ -9,51 +9,60 @@ from API.AccountManager import AccountManager # 🎯 AccountManager 임포트
 
 
 class RealtimeManager:
+    # 🎯 trade_budget 인자 추가
     def __init__(self, target_list, acc_no, acc_flag, trade_budget, logger):
-        # ... (기존 초기화 로직 동일) ...
         self.logger = logger
+        # 🎯 계좌 정보 및 주문 매니저 초기화
         self.acc_no = acc_no
         self.acc_flag = acc_flag
-        self.trade_budget = trade_budget
+        self.trade_budget = trade_budget # 🎯 전달받은 예산 저장
         self.om = OrderManager()
-        self.am = AccountManager()
+        self.am = AccountManager()  # 🎯 추가: 계좌 관리 객체 저장
         
         self.rdm = RealtimeDataManager(callback_func=self.on_realtime_data)
         self.targets = target_list
+        
+        # 🎯 체결강도 이력 관리를 위한 딕셔너리
         self.prev_strength = {t['code']: 0.0 for t in self.targets}
         
-        self.avg_vol_1m = {t['code']: t.get('avg_vol_60', 0) / 390 for t in self.targets}
+        # 🎯 [전략 수정] 60일 평균 분당 거래량 계산 (390분 기준)
+        self.avg_vol_1m = {}
+        for t in self.targets:
+            # UniverseBuilder에서 넘겨준 avg_vol_60 사용
+            self.avg_vol_1m[t['code']] = t.get('avg_vol_60', 0) / 390
+
+        # 실시간 거래량 누적을 위한 윈도우 (최근 10초)
         self.vol_windows = {t['code']: deque() for t in self.targets}
         
         self.buy_signals = {}
-        self.sold_codes = set() 
+        self.sold_codes = set() # 🎯 [추가] 당일 매도 완료 종목 리스트 (재매수 금지용)
         self.positions = {}
         self.max_positions = 10
-        self.orderbook_state = {} # 🎯 호가창 데이터를 담을 딕셔너리
+        self.orderbook_state = {}
         self.is_exiting = {} 
         self.subscribed_codes = set()
         
-        # 설정값 튜닝
-        self.ts_activation_pct = 0.5
-        self.ts_callback_pct = 0.3
-        self.hard_stop_loss = -1.2
-        
-        # 🎯 [추가] 체결강도 상한선 (이상 수치 차단)
-        self.strength_limit = 1000.0
+        # 트레일링 스탑 설정값
+        self.ts_activation_pct = 0.5   # 감시 시작 수익률 (0.5% 이상 수익 시 작동)
+        self.ts_callback_pct = 0.3     # 하락 허용 폭 (최고가 대비 0.3% 하락 시 매도)
+        self.hard_stop_loss = -1.2     # 최소 방어선 (손절선)
         
     def start_subscribing(self):
-        """[업데이트] 160여 종목에 대해 현재가와 호가창 동시 감시"""
+        """[최적화] cur 모듈 1개만 사용하여 316종목 전체 감시"""
         if not self.targets: return
+        
+        # 1. 시계열 알림 구독
         self.om.subscribe_conclusion()
         
+        # 2. 유니버스 전체 구독 (316 x 1 = 316 < 400 한도 통과)
         for t in self.targets:
             code = t['code']
             self.buy_signals[code] = False
-            # 🎯 'jpbidcnld'(호가창)를 추가하여 160 x 2 = 320개 모듈 사용
-            self.rdm.start_monitoring(code, types=['cur', 'jpbidcnld']) 
+            # 호가창 데이터는 사용하지 않으므로 초기화 생략
+            self.rdm.start_monitoring(code, types=['cur']) # 🎯 cur만 사용
             self.subscribed_codes.add(code)
             
-        self.logger.info(f"📡 [정밀 감시] {len(self.targets)}종목 수급+호가 데이터 분석 시작")
+        self.logger.info(f"📡 [단일모듈 감시] {len(self.targets)}종목 현재가/체결 데이터 수집 시작")
         
     def on_realtime_data(self, data):
         code = data.get('code')
@@ -84,17 +93,19 @@ class RealtimeManager:
             # 주의: 여기서 바로 del 하지 말고, on_order_confirmed에서 체결 확인 후 삭제하는 것이 안전합니다.
     
     def process_orderbook(self, code, data):
-        """호가창 데이터를 분석하여 상태 저장"""
-        # 총 매도잔량과 총 매수잔량 추출
-        total_ask_vol = data.get('total_ask_vol', 0)
-        total_bid_vol = data.get('total_bid_vol', 0)
-        
-        if total_ask_vol > 0 and total_bid_vol > 0:
-            self.orderbook_state[code] = {
-                'total_ask_vol': total_ask_vol,
-                'total_bid_vol': total_bid_vol,
-                'ratio': total_ask_vol / total_bid_vol # 매도/매수 비율
-            }
+            asks = data.get('asks', [])
+            bids = data.get('bids', [])
+            ask_vols = data.get('ask_vols', [])
+            
+            if asks and bids:
+                spread = asks[0] - bids[0]
+                is_dense = all(v > 0 for v in ask_vols[:3])
+                self.orderbook_state[code] = {
+                    'total_ask_vol': data['total_ask_vol'],
+                    'total_bid_vol': data['total_bid_vol'],
+                    'spread': spread,
+                    'is_dense': is_dense
+                }
 
     def process_tick(self, code, data):
         curr_price = data.get('current', 0)
@@ -123,34 +134,27 @@ class RealtimeManager:
         self.analyze_combined_signal(code, data, strength, accel)
     
     def analyze_combined_signal(self, code, data, strength, accel):
-        """거래량 폭발 + 체결강도 가속도 + 호가창 잔량 통합 분석"""
+        """거래량 폭발 + 체결강도 가속도 기반 분석 (호가 필터 제외)"""
         price = data.get('current', 0)
+        # diff = data.get('diff_val', 0) # RealtimeHandler의 필드명 확인
         
-        # 1. 거래량 폭발 계산 (10초 -> 1분 예측)
+        # # [필터 1] 상승 중인 종목인가?
+        # if diff <= 0: return
+        
+        # [필터 2] 거래량 폭발 (10초 누적 -> 1분 예측)
         ten_sec_vol = sum(v for t, v in self.vol_windows[code])
         predicted_1m_vol = ten_sec_vol * 6
         base_vol_1m = self.avg_vol_1m.get(code, 0)
+        
         if base_vol_1m <= 0: return
         vol_multiple = predicted_1m_vol / base_vol_1m
         
-        # 2. 호가창 필터 확인
-        ob = self.orderbook_state.get(code)
-        # 매도잔량이 매수잔량보다 최소 1.2배는 많아야 상방 에너지가 있다고 판단
-        is_orderbook_valid = ob and ob['ratio'] >= 1.2 
-        
-        # 🎯 [핵심 필터 적용]
-        # - 거래량 15배 돌파
-        # - 체결강도 110% 이상이며 1000% 이하 (이상치 제거)
-        # - 가속도 1.5 이상
-        # - 매도잔량 우위 (호가창 필터)
-        if (vol_multiple > 15.0 and 
-            110.0 <= strength <= self.strength_limit and 
-            accel >= 1.5 and 
-            is_orderbook_valid):
-            
-            self.logger.info(f"🚀 [진짜 수급 포착] {data.get('name')} | "
-                            f"폭발:{vol_multiple:.1f}배 | 강도:{strength:.1f}% | "
-                            f"호가비율:{ob['ratio']:.2f}")
+        # [필터 3] 체결강도 및 가속도 (15배 돌파 & 강도 110% & 가속도 1.5)
+        # 호가창 잔량 필터는 제거하여 실행 속도와 종목 수 확보
+        if vol_multiple > 15.0 and strength >= 110.0 and accel >= 1.5:
+            self.logger.info(f"🔥 [강력 신호] {data.get('name')} | "
+                            f"거래폭발:{vol_multiple:.1f}배 | "
+                            f"강도:{strength:.1f}%(↑{accel:.1f})")
             self.execute_buy(code, data.get('name'), price)
                    
     # def analyze_volume_spike(self, code, data):

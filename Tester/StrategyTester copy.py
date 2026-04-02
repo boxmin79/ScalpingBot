@@ -33,10 +33,8 @@ class StrategyTester:
             with open(self.universe_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # 리스트 내 딕셔너리에서 'code' 필드만 추출
-            codes = [item['code'] for item in data]
-            print(f"✅ 유니버스 파일 로드 완료: {len(codes)}종목")
-            return codes
+           
+            return data
         except Exception as e:
             print(f"❌ 파일 읽기 중 오류 발생: {e}")
             return []
@@ -58,7 +56,7 @@ class StrategyTester:
 
     def run_backtest(self):
         """파일 기반 유니버스를 대상으로 15배 거래량 로직 검증"""
-        targets = self.get_test_targets()
+        targets = self.load_universe_from_file()
         
         if not targets:
             print("⚠️ 테스트할 대상 종목이 없습니다. 시장 상황을 확인하거나 유니버스 파일을 확인하세요.")
@@ -67,7 +65,10 @@ class StrategyTester:
         print(f"\n🚀 [백테스트] 1분봉 기반 15배 거래량 폭발 로직 검증 시작...")
         print("-" * 75)
 
-        for code, name in targets.items():
+        for target in targets:
+            code = target['code']
+            name = target['name']
+            
             daily = self.mdm.get_chart_data(code, req_type='2', target_count=61, chart_type='D')
             if len(daily) < 60: continue
             

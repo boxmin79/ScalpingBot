@@ -146,7 +146,7 @@ class UniverseBuilder:
                         avg_amt_20 = sum(amt_20_list) / 20 # 20일 평균 실제 거래대금
                         
                         # [필터] 평균 거래대금이 50억 미만이면 탈락 (실제 수치 기반)
-                        if avg_amt_20 < 2_000_000_000:
+                        if avg_amt_20 < 5_000_000_000:
                             drop_reasons['liquidity'] += 1
                             continue
                         
