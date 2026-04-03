@@ -99,42 +99,70 @@ class TelegramBot:
             self.send_message("❌ 데이터를 가져오지 못했습니다.")
             return
 
-       # 모든 값을 int() 또는 float()로 감싸서 숫자로 변환 후 포맷팅 적용
+        # 헬퍼 함수: 빈 문자열이나 None을 안전하게 숫자로 변환
+        def to_int(val):
+            try: return int(val) if val and str(val).strip() else 0
+            except: return 0
+
+        def to_float(val):
+            try: return float(val) if val and str(val).strip() else 0.0
+            except: return 0.0
+
         msg = "📊 *금일 매매 손익 리포트*\n"
         msg += "--------------------------\n"
-        # 🎯 int() 추가
-        msg += f"💰 *실현 손익:* {int(summary['total_realized_pl']):,}원\n"
-        msg += f"📈 *평가 손익:* {int(summary['total_eval_pl']):,}원\n"
-        # 🎯 float() 추가
-        msg += f"📉 *당일 수익률:* {float(summary['total_yield']):.2f}%\n"
+        # 안전하게 변환 후 포맷팅 적용
+        msg += f"💰 *실현 손익:* {to_int(summary.get('total_realized_pl')):,}원\n"
+        msg += f"📈 *평가 손익:* {to_int(summary.get('total_eval_pl')):,}원\n"
+        msg += f"📉 *당일 수익률:* {to_float(summary.get('total_yield')):.2f}%\n"
         msg += "--------------------------\n\n"
 
         if not details:
             msg += "매매 내역이 없습니다."
         else:
             for item in details:
-                emoji = "🔴" if float(item['yield']) > 0 else "🔵" if float(item['yield']) < 0 else "⚪"
-                msg += f"{emoji} *{item['name']}*\n"
-                # 🎯 여기도 int()와 float() 추가
-                msg += f"   - 실현: {int(item['realized_pl']):,}원 ({float(item['yield']):.2f}%)\n"
+                # 개별 항목 안전 변환
+                item_yield = to_float(item.get('yield'))
+                item_pl = to_int(item.get('realized_pl'))
+                
+                emoji = "🔴" if item_yield > 0 else "🔵" if item_yield < 0 else "⚪"
+                msg += f"{emoji} *{item.get('name', '알 수 없음')}*\n"
+                msg += f"   - 실현: {item_pl:,}원 ({item_yield:.2f}%)\n"
         
         self.send_message(msg)
     
     def send_balance_report(self):
-        """실시간 잔고 및 보유 종목 현황 전송"""
+        """실시간 잔고 및 보유 종목 현황 전송 (안전한 형변환 적용)"""
         summary, stocks = self.am.get_balance_data()
         
         if not summary:
             self.send_message("❌ 잔고 데이터를 가져오지 못했습니다.")
             return
 
-        # 1. 계좌 요약 정보 (안전한 형변환 적용)
+        # 헬퍼 함수: 에러 방지를 위한 안전한 숫자 변환
+        def to_int(val):
+            try:
+                return int(float(val)) if val and str(val).strip() else 0
+            except:
+                return 0
+
+        def to_float(val):
+            try:
+                return float(val) if val and str(val).strip() else 0.0
+            except:
+                return 0.0
+
+        # 1. 계좌 요약 정보 추출
+        total_eval = to_int(summary.get('Total_Eval_Amt'))
+        d2_deposit = to_int(summary.get('D2_Deposit'))
+        total_pl = to_int(summary.get('Total_Profit_Loss'))
+        total_yield = to_float(summary.get('Total_Yield'))
+
         msg = "🏢 *실시간 잔고 평가 현황*\n"
         msg += "--------------------------\n"
-        msg += f"💰 *총 평가금액:* {summary['Total_Eval_Amt']:,}원\n"
-        msg += f"💵 *D+2 예상예수금:* {summary['D2_Deposit']:,}원\n"
-        msg += f"📊 *총 평가손익:* {summary['Total_Profit_Loss']:,}원\n"
-        msg += f"📈 *총 수익률:* {summary['Total_Yield']:.2f}%\n"
+        msg += f"💰 *총 평가금액:* {total_eval:,}원\n"
+        msg += f"💵 *D+2 예상예수금:* {d2_deposit:,}원\n"
+        msg += f"📊 *총 평가손익:* {total_pl:,}원\n"
+        msg += f"📈 *총 수익률:* {total_yield:.2f}%\n"
         msg += "--------------------------\n\n"
 
         # 2. 보유 종목 상세 내역
@@ -142,14 +170,21 @@ class TelegramBot:
             msg += "현재 보유 중인 종목이 없습니다."
         else:
             for s in stocks:
+                # 안전하게 데이터 추출
+                s_name = s.get('name', '알 수 없음')
+                s_code = s.get('code', '000000')
+                s_yield = to_float(s.get('yield'))
+                s_qty = to_int(s.get('total_qty'))
+                s_pl = to_int(s.get('profit_loss'))
+                s_buy_price = to_int(s.get('buy_price'))
+
                 # 수익률 이모지 설정
-                yield_val = s['yield']
-                emoji = "🔴" if yield_val > 0 else "🔵" if yield_val < 0 else "⚪"
+                emoji = "🔴" if s_yield > 0 else "🔵" if s_yield < 0 else "⚪"
                 
-                msg += f"{emoji} *{s['name']}* ({s['code']})\n"
-                msg += f"   - 보유: {s['total_qty']:,}주\n"
-                msg += f"   - 손익: {s['profit_loss']:,}원 ({yield_val:.2f}%)\n"
-                msg += f"   - 매입가: {s['buy_price']:,}원\n\n"
+                msg += f"{emoji} *{s_name}* ({s_code})\n"
+                msg += f"   - 보유: {s_qty:,}주\n"
+                msg += f"   - 손익: {s_pl:,}원 ({s_yield:.2f}%)\n"
+                msg += f"   - 매입가: {s_buy_price:,}원\n\n"
 
         self.send_message(msg)
         

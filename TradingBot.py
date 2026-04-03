@@ -97,14 +97,15 @@ class TradingBot:
         
         if positions:
             for code, pos in positions.items():
-                print(f"   > 발견된 보유 종목: {pos['name']}({code}) | {pos['qty']}주")
+                self.logger.info(f"   > 발견된 보유 종목: {pos['name']}({code}) | {pos['qty']}주", send_tg=False)
         else:
-            print("   > 현재 보유 중인 종목이 없습니다.")
+            self.logger.info("   > 현재 보유 중인 종목이 없습니다.")
             
         return positions
                 
     def run(self):
         """봇 메인 루프 실행"""
+        
         universe = self.builder.load_universe()
         if not universe:
             self.logger.info("❌ 유니버스 구축 실패.")
@@ -113,6 +114,10 @@ class TradingBot:
         # 리스트에서 종목 코드만 추출하여 타깃 설정
         targets = universe
         self.logger.info(f"✅ 유니버스 {len(targets)}종목 로드 완료. 실시간 감시를 시작합니다.")
+        
+        # 🎯 [수정] 루프 진입 전 초기화 필수
+        last_budget_update = time.time()
+        last_sync_time = time.time()
         
         while True:
             try:
@@ -130,6 +135,15 @@ class TradingBot:
                     self.stop()
                     break
                 
+                # 🎯 5분(300초)마다 실잔고 강제 동기화
+                if time.time() - last_sync_time > 300:
+                    current_real_positions = self.sync_account_positions()
+                    if self.manager:
+                        # 로컬에만 있고 서버에 없는 종목 제거 및 수량 업데이트
+                        self.manager.positions = current_real_positions
+                        self.logger.info("🔄 [시스템] 실잔고 동기화 완료")
+                    last_sync_time = time.time()
+                    
                 if time.time() - last_budget_update > 300: 
                     if self.update_budget():
                         if self.manager:

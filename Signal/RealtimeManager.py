@@ -245,41 +245,34 @@ class RealtimeManager:
         except Exception as e:
             self.logger.error(f"❌ 주문 중 오류 발생: {e}")
 
+    # RealtimeManager.py 내 on_order_confirmed 수정
     def on_order_confirmed(self, data):
-        """실시간 체결 알림 처리 (부분 체결 대응 버전)"""
         if data['status'] == 'CONCLUDED':
             code = data['stock_code']
-            exec_qty = data['volume'] # 이번에 체결된 수량
-            exec_price = data['price'] # 이번 체결 가격
+            exec_qty = data['volume']
+            exec_price = data['price']
             
             if data['side'] == 'BUY':
                 if code in self.positions:
-                    self.positions[code] = {
-                        'name': data['name'],
-                        'buy_price': exec_price,
-                        'highest_price': exec_price, # 🎯 트레일링 스탑용 최고가 초기화
-                        'qty': exec_qty,
-                        'entry_time': time.time()
-                    }
-                    # 🎯 가중 평균 단가 계산 (기존 금액 + 새 금액) / 전체 수량
                     pos = self.positions[code]
                     
+                    # 🎯 가중 평균 단가 및 수량 합산 (정확한 로직)
                     current_total_cost = pos['buy_price'] * pos['qty']
                     new_fill_cost = exec_price * exec_qty
                     
-                    total_qty = pos['qty'] + exec_qty
-                    new_avg_price = (current_total_cost + new_fill_cost) / total_qty
+                    pos['qty'] += exec_qty # 기존 수량에 더하기
+                    pos['buy_price'] = (current_total_cost + new_fill_cost) / pos['qty']
                     
-                    # 데이터 업데이트
-                    pos['qty'] = total_qty
-                    pos['buy_price'] = new_avg_price
+                    # 추가 매수 시 최고가는 현재 체결가와 기존 최고가 중 큰 것으로 갱신
+                    pos['highest_price'] = max(pos.get('highest_price', 0), exec_price)
                     
-                    self.logger.info(f"✅ [매수 추가체결] {data['name']} | +{exec_qty}주 | 새 평단가: {new_avg_price:,.0f}원")
+                    self.logger.info(f"✅ [매수 추가체결] {data['name']} | +{exec_qty}주 | 총: {pos['qty']}주 | 평단: {pos['buy_price']:,.0f}원")
                 else:
-                    # 첫 진입
+                    # 신규 진입
                     self.positions[code] = {
                         'name': data['name'],
                         'buy_price': exec_price,
+                        'highest_price': exec_price,
                         'qty': exec_qty,
                         'entry_time': time.time()
                     }
@@ -336,9 +329,20 @@ class RealtimeManager:
             sell_reason = f"손절(기준선 {self.hard_stop_loss}%)"
 
         if sell_reason:
-            self.logger.info(f"💰 [매도 실행] {pos['name']} | {sell_reason} | 현재수익: {current_profit:.2f}%")
+            # 🎯 주문 전 실제 서버 잔고 수량 확인 (동기화 실패 대비)
+            actual_balance = self.am.get_present_balance() # AccountManager에 구현된 함수라 가정
+            actual_qty = actual_balance.get(code, {}).get('qty', 0)
+            
+            sell_qty = min(pos['qty'], actual_qty) if actual_qty > 0 else pos['qty']
+            
+            if sell_qty <= 0:
+                self.logger.error(f"❌ [매도 실패] {pos['name']} 서버 잔고 없음 (로컬:{pos['qty']}주)")
+                del self.positions[code] # 잔고가 없으므로 포지션 삭제
+                return
+
+            self.logger.info(f"💰 [매도 실행] {pos['name']} | {sell_reason} | 수량: {sell_qty}주")
             self.is_exiting[code] = True
-            self.om.request_new_order(self.acc_no, self.acc_flag, code, pos['qty'], 0, order_type="1", hoga_flag="03")
+            self.om.request_new_order(self.acc_no, self.acc_flag, code, sell_qty, 0, order_type="1", hoga_flag="03")
             
     def get_tick_size(self, price):
         if price < 2000: return 1
@@ -353,7 +357,29 @@ class RealtimeManager:
         self.rdm.stop_all()
         # 🎯 [추가] 실시간 체결 알림 해제 (메모리 누수 방지)
         self.om.unsubscribe_conclusion()
-        
+    
+    # RealtimeManager.py에 추가할 메서드
+
+def sync_balance_with_server(self):
+    """서버의 실제 잔고를 가져와 로컬 positions를 동기화합니다."""
+    server_positions = self.am.get_present_balance() # AccountManager의 잔고 조회 함수
+    
+    for code, info in server_positions.items():
+        if code in self.positions:
+            # 수량이 다를 경우 서버 데이터 기준으로 업데이트
+            if self.positions[code]['qty'] != info['qty']:
+                self.logger.warning(f"⚠️ [잔고 불일치 수정] {info['name']}: 로컬({self.positions[code]['qty']}) -> 서버({info['qty']})")
+                self.positions[code]['qty'] = info['qty']
+        else:
+            # 로컬에는 없는데 서버에 있는 경우 (예: 프로그램 재시작 시)
+            self.positions[code] = {
+                'name': info['name'],
+                'buy_price': info['buy_price'],
+                'highest_price': info['current_price'],
+                'qty': info['qty'],
+                'entry_time': time.time()
+            }
+                
     # RealtimeManager.py 내부 추가 및 수정
 
     # def update_targets(self, new_target_list):
