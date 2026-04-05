@@ -51,15 +51,17 @@ class OrderManager:
         """CpConclusion 이벤트 발생 시 호출"""
         code = self.obj_conclusion.GetHeaderValue(9)
         name = self.obj_conclusion.GetHeaderValue(1)
-        actual_price = self.obj_conclusion.GetHeaderValue(4) # 실제 체결가
+        actual_price = self.obj_conclusion.GetHeaderValue(4) # 체결가
+        concluded_qty = self.obj_conclusion.GetHeaderValue(3) # 🎯 체결 수량 추출
         status = self.obj_conclusion.GetHeaderValue(14)      # 체결 상태
         
-        # '체결' 상태일 때만 콜백 호출
-        if status == '1' and self.callback:
+        # '1'(체결) 또는 '2'(확인) 상태일 때 콜백 전달
+        if status in ['1', '2'] and self.callback:
             concl_data = {
                 'code': code,
                 'name': name,
-                'actual_price': actual_price
+                'actual_price': actual_price,
+                'concluded_qty': concluded_qty # 🎯 수량 데이터 추가
             }
             self.callback(concl_data)
                 

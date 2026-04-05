@@ -75,33 +75,6 @@ class TradingBot:
         else:
             self.logger.info("⚠️ 매매 가능 예수금이 부족하거나 정보를 가져올 수 없습니다.")
             return False
-        
-    def sync_account_positions(self):
-        """
-        [교체] 현재 계좌의 실제 잔고를 긁어와서 봇 포맷으로 변환합니다.
-        """
-        print(f"📦 실잔고 동기화 중...")
-        
-        # AccountManager의 get_balance_data를 사용하여 실잔고 획득
-        summary, stocks = self.account.get_balance_data()
-        
-        positions = {}
-        for s in stocks:
-            # AccountManager가 반환한 데이터 필드를 봇 포맷에 매핑
-            positions[s['code']] = {
-                'name': s['name'],
-                'buy_price': s['buy_price'],
-                'qty': s['total_qty'],
-                'entry_time': time.time()  # 동기화 시점 기준으로 설정
-            }
-        
-        if positions:
-            for code, pos in positions.items():
-                self.logger.info(f"   > 발견된 보유 종목: {pos['name']}({code}) | {pos['qty']}주", send_tg=False)
-        else:
-            self.logger.info("   > 현재 보유 중인 종목이 없습니다.")
-            
-        return positions
                 
     def run(self):
         """봇 메인 루프 실행"""
@@ -135,13 +108,10 @@ class TradingBot:
                     self.stop()
                     break
                 
-                # 🎯 5분(300초)마다 실잔고 강제 동기화
+                # 🎯 5분마다 Manager 스스로 동기화하도록 지시 (데이터 증발 방지)
                 if time.time() - last_sync_time > 300:
-                    current_real_positions = self.sync_account_positions()
                     if self.manager:
-                        # 로컬에만 있고 서버에 없는 종목 제거 및 수량 업데이트
-                        self.manager.positions = current_real_positions
-                        self.logger.info("🔄 [시스템] 실잔고 동기화 완료")
+                        self.manager.sync_balance_with_server()
                     last_sync_time = time.time()
                     
                 if time.time() - last_budget_update > 300: 
@@ -151,14 +121,12 @@ class TradingBot:
                         last_budget_update = time.time()
                     
                 if self.manager is None:
-                    # 첫 실행 시에만 생성
                     self.manager = RealtimeManager(targets, self.acc_no, self.acc_flag, self.trade_budget, self.logger)
-                    # [추가] OrderManager의 체결 이벤트를 RealtimeManager가 받도록 연결
-                    self.manager.positions = self.initial_positions # 초기 실잔고 이식
                     self.manager.om.set_callback(self.manager.on_order_confirmed)
+                    # 🎯 시작 직후 최초 1회 실잔고 동기화
+                    self.manager.sync_balance_with_server() 
                     self.manager.start_subscribing()
                 
-                # 메시지 펌프 유지 (실시간 이벤트 수신을 위해 필수)
                 self.wait_and_monitor(10)
 
             except KeyboardInterrupt:

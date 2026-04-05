@@ -215,10 +215,12 @@ class RealtimeManager:
             
            # MAE/MFE 추적을 위해 임시 포지션 정보 바로 생성
             signal_id = f"{datetime.now().strftime('%H%M%S')}_{code}"
+            
             self.positions[code] = {
                 'signal_id': signal_id,
                 'name': name,
-                'qty': final_buy_qty,
+                'expected_qty': final_buy_qty, # 🎯 주문 넣은 '목표 수량'
+                'qty': 0,                      # 🎯 실제 체결된 수량 (처음엔 0)
                 'expected_entry_price': price, # 실제 매수가(buy_price)로 쓸 기준
                 'actual_entry_price': price,   # 체결 전까지는 예상가와 동일하게 세팅
                 'entry_time': time.time(),
@@ -236,52 +238,88 @@ class RealtimeManager:
         code = concl_data['code']
         if code in self.positions:
             pos = self.positions[code]
-            pos['actual_entry_price'] = concl_data['actual_price']
+            
+            # 🎯 평단가 계산 (분할 체결 고려)
+            old_qty = pos['qty']
+            new_qty = concl_data['concluded_qty']
+            curr_actual_price = pos['actual_entry_price'] if old_qty > 0 else float(concl_data['actual_price'])
+            
+            # 가중 평균으로 실제 평단가 갱신
+            if old_qty + new_qty > 0:
+                pos['actual_entry_price'] = ((curr_actual_price * old_qty) + (float(concl_data['actual_price']) * new_qty)) / (old_qty + new_qty)
+            
+            # 🎯 체결 수량 누적
+            pos['qty'] += new_qty
             pos['is_concluded'] = True
             
-            # 슬리피지 계산
             slippage = (pos['actual_entry_price'] - pos['expected_entry_price']) / pos['expected_entry_price']
-            self.logger.info(f"✅ {pos['name']} 체결 완료 | 슬리피지: {slippage:.4%}")
-                       
+            self.logger.info(f"✅ {pos['name']} 체결 누적 ({pos['qty']}/{pos['expected_qty']}주) | 평단가: {pos['actual_entry_price']:,.0f}원")
+                               
     def manage_exit(self, code, curr_price):
         """트레일링 스탑 및 손절 관리"""
-        if self.is_exiting.get(code, False):
+        if code not in self.positions or self.is_exiting.get(code, False):
             return
 
         pos = self.positions[code]
-        # 에러 수정: 'buy_price' 대신 'actual_entry_price' 사용
-        buy_price = pos.get('actual_entry_price', pos['expected_entry_price'])
+        
+        # 🎯 아직 단 1주도 체결되지 않았다면 매도 로직 패스
+        if pos.get('qty', 0) == 0:
+            return
+
+        buy_price = pos.get('actual_entry_price', pos.get('expected_entry_price', curr_price))
+        if 'max_price' not in pos: pos['max_price'] = curr_price
         
         fee_tax_rate = 0.23
         current_profit = ((curr_price - buy_price) / buy_price * 100) - fee_tax_rate
         highest_profit = ((pos['max_price'] - buy_price) / buy_price * 100) - fee_tax_rate
 
         sell_reason = None
-
         if highest_profit >= self.ts_activation_pct:
             if current_profit <= (highest_profit - self.ts_callback_pct):
-                sell_reason = f"TS(최고 {highest_profit:.2f}% 대비 {self.ts_callback_pct}% 하락)"
+                sell_reason = f"TS(최고 {highest_profit:.2f}% 대비 하락)"
         elif current_profit <= self.hard_stop_loss:
             sell_reason = f"손절(기준선 {self.hard_stop_loss}%)"
 
         if sell_reason:
-            actual_balance = self.am.get_present_balance() 
-            actual_qty = actual_balance.get(code, {}).get('qty', 0)
-            
-            sell_qty = min(pos['qty'], actual_qty) if actual_qty > 0 else pos['qty']
-            
-            if sell_qty <= 0:
-                self.logger.error(f"❌ [매도 실패] {pos['name']} 서버 잔고 없음")
-                self.write_final_log(code, curr_price, "에러-잔고없음")
-                return
+            # 🎯 느린 잔고 조회 API 호출 제거. 로컬에 저장된 체결 수량을 즉시 매도!
+            sell_qty = pos['qty'] 
 
             self.logger.info(f"💰 [매도 실행] {pos['name']} | {sell_reason} | 수량: {sell_qty}주")
             self.is_exiting[code] = True
             self.om.request_new_order(self.acc_no, self.acc_flag, code, sell_qty, 0, order_type="1", hoga_flag="03")
-            
-            # 매도 주문 즉시 로그를 기록하고 포지션 해제
             self.write_final_log(code, curr_price, sell_reason)
     
+    def sync_balance_with_server(self):
+        """서버의 실제 잔고를 가져와 로컬 positions 동기화 (기존 데이터 보존)"""
+        # 🎯 메서드명 수정 및 리스트 처리 로직으로 변경
+        summary, stocks = self.am.get_balance_data()
+        
+        server_codes = set()
+        for s in stocks:
+            code = s['code']
+            server_codes.add(code)
+            
+            if code in self.positions:
+                # 봇이 이미 추적 중이면 '수량'만 몰래 갱신 (max_price 등은 보존)
+                if self.positions[code]['qty'] != s['total_qty']:
+                    self.logger.warning(f"⚠️ [잔고 불일치] {s['name']}: {self.positions[code]['qty']} -> {s['total_qty']}")
+                    self.positions[code]['qty'] = s['total_qty']
+            else:
+                # 봇이 모르는 종목이 서버에 있으면 봇 포맷(모든 키 포함)에 맞춰 새로 등록
+                self.positions[code] = {
+                    'signal_id': f"SYNC_{code}",
+                    'name': s['name'],
+                    'qty': s['total_qty'],
+                    'expected_entry_price': s['buy_price'],
+                    'actual_entry_price': s['buy_price'],
+                    'buy_price': s['buy_price'], 
+                    'max_price': s['buy_price'], # 현재가가 없으므로 매입가로 대체
+                    'min_price': s['buy_price'],
+                    'entry_time': time.time(),
+                    'is_concluded': True
+                }
+        self.logger.info("🔄 [시스템] 실잔고 동기화 완료")
+        
     def write_final_log(self, code, exit_price, reason):
         """매매 종료 시 최종 결과 CSV 기록"""
         pos = self.positions.get(code)
@@ -322,25 +360,8 @@ class RealtimeManager:
         # 🎯 [추가] 실시간 체결 알림 해제 (메모리 누수 방지)
         self.om.unsubscribe_conclusion()
     
-    # RealtimeManager.py에 추가할 메서드
-
-    def sync_balance_with_server(self):
-        """서버의 실제 잔고를 가져와 로컬 positions를 동기화합니다."""
-        server_positions = self.am.get_present_balance() # AccountManager의 잔고 조회 함수
-        
-        for code, info in server_positions.items():
-            if code in self.positions:
-                # 수량이 다를 경우 서버 데이터 기준으로 업데이트
-                if self.positions[code]['qty'] != info['qty']:
-                    self.logger.warning(f"⚠️ [잔고 불일치 수정] {info['name']}: 로컬({self.positions[code]['qty']}) -> 서버({info['qty']})")
-                    self.positions[code]['qty'] = info['qty']
-            else:
-                # 로컬에는 없는데 서버에 있는 경우 (예: 프로그램 재시작 시)
-                self.positions[code] = {
-                    'name': info['name'],
-                    'buy_price': info['buy_price'],
-                    'highest_price': info['current_price'],
-                    'qty': info['qty'],
-                    'entry_time': time.time()
-                }
-      
+## TODO : 실전 가동 전 마지막 팁 (로직상 조언)
+# 단, 가동 후 쌓이는 로그(Data/trade_summary.csv)를 보실 때 이것 하나만 꼭 확인해 보세요.
+# 부분 체결 후 급락 상황: 만약 100주 매수 주문을 넣었는데 10주만 체결된 상태에서 주가가 -1.2% 하락하면, 현재 로직은 가진 10주를 즉시 손절합니다.
+# 그런데 대신증권 서버에는 아직 "나머지 90주 매수 대기(미체결)" 주문이 살아있을 수 있습니다. 
+# 손절이 자주 나가는 하락장이라면, 추후 매도 주문을 넣기 전에 "해당 종목의 미체결 매수 주문 취소(CancelOrder)" 로직을 덧붙이는 것을 고려해 볼 수 있습니다.
