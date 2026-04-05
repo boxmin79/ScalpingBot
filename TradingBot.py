@@ -153,6 +153,7 @@ class TradingBot:
                 if self.manager is None:
                     # 첫 실행 시에만 생성
                     self.manager = RealtimeManager(targets, self.acc_no, self.acc_flag, self.trade_budget, self.logger)
+                    # [추가] OrderManager의 체결 이벤트를 RealtimeManager가 받도록 연결
                     self.manager.positions = self.initial_positions # 초기 실잔고 이식
                     self.manager.om.set_callback(self.manager.on_order_confirmed)
                     self.manager.start_subscribing()

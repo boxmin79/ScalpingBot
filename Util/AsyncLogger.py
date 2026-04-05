@@ -5,6 +5,7 @@ import queue
 import threading
 from datetime import datetime
 from Util.TelegramBot import TelegramBot
+import os
 
 # 🎯 텔레그램 전송 전용 핸들러 정의
 class TelegramLogHandler(logging.Handler):
@@ -57,6 +58,22 @@ class AsyncLogger:
         
         self.listener.start()
 
+        # AsyncLogger.py 에 추가할 예시 메서드
+    def log_trade_summary(self, trade_data):
+        """
+        trade_data: dict 형태의 매매 결과
+        형식: ID, 종목, 시총, M, I, 진입가, 매도가, 수익률, MAE, MFE, 사유 등
+        """
+        import csv
+        file_path = "Data/trade_summary.csv"
+        file_exists = os.path.isfile(file_path)
+        
+        with open(file_path, 'a', newline='', encoding='utf-8-sig') as f:
+            writer = csv.DictWriter(f, fieldnames=trade_data.keys())
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(trade_data)
+    
     def info(self, msg, send_tg=True):
         # 🎯 extra를 통해 텔레그램 전송 여부를 핸들러에 전달
         self.logger.info(msg, extra={'send_tg': send_tg})

@@ -28,11 +28,11 @@ class OrderManager:
         self.map_status = {'1': 'CONCLUDED', '2': 'CONFIRMED', '3': 'REJECTED', '4': 'ACCEPTED', '5': 'PENDING'}
         self.map_order_kind = {'1': 'NORMAL', '2': 'MODIFY', '3': 'CANCEL'}
 
-        self.on_conclusion_callback = None # 체결 시 실행할 외부 함수 저장용
+        self.callback = None # 체결 시 실행할 외부 함수 저장용
     
     def set_callback(self, func):
         """체결 알림을 받을 함수를 등록"""
-        self.on_conclusion_callback = func
+        self.callback = func
             
     # --- 실시간 수신 설정 ---
     def subscribe_conclusion(self):
@@ -48,27 +48,20 @@ class OrderManager:
         print("Unsubscribed from real-time conclusion.")
 
     def process_conclusion(self):
+        """CpConclusion 이벤트 발생 시 호출"""
+        code = self.obj_conclusion.GetHeaderValue(9)
+        name = self.obj_conclusion.GetHeaderValue(1)
+        actual_price = self.obj_conclusion.GetHeaderValue(4) # 실제 체결가
+        status = self.obj_conclusion.GetHeaderValue(14)      # 체결 상태
         
-        """실시간 데이터를 파싱하여 처리 (Key값 영문)"""
-        try:
-            # GetHeaderValue를 통한 데이터 추출
+        # '체결' 상태일 때만 콜백 호출
+        if status == '1' and self.callback:
             concl_data = {
-                "acc_name": self.obj_conclusion.GetHeaderValue(1),
-                "name": self.obj_conclusion.GetHeaderValue(2),         # 🎯 'stock_name' 대신 'name'으로 통일하거나 둘 다 추가
-                "volume": self.obj_conclusion.GetHeaderValue(3) or 0,
-                "price": self.obj_conclusion.GetHeaderValue(4) or 0,
-                "order_no": self.obj_conclusion.GetHeaderValue(5),
-                "stock_code": self.obj_conclusion.GetHeaderValue(9),
-                "side": self.map_side.get(self.obj_conclusion.GetHeaderValue(12), "UNKNOWN"),
-                "status": self.map_status.get(self.obj_conclusion.GetHeaderValue(14), "UNKNOWN"),
-                "order_kind": self.map_order_kind.get(self.obj_conclusion.GetHeaderValue(16), "UNKNOWN")
+                'code': code,
+                'name': name,
+                'actual_price': actual_price
             }
-
-            # 등록된 콜백 함수가 있다면 데이터를 던져줌
-            if self.on_conclusion_callback:
-                self.on_conclusion_callback(concl_data)
-        except Exception as e:
-                print(f"❌ Real-time Conclusion Parsing Error: {e}")
+            self.callback(concl_data)
                 
     # --- 기존 주문 메서드 ---
     def request_new_order(self, acc_no, acc_flag, code, qty, price, order_type="2", hoga_flag="01"):

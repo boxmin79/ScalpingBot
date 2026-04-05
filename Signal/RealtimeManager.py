@@ -1,4 +1,7 @@
 import path_finder
+import os
+import csv
+import json
 import time
 import pythoncom
 from datetime import datetime
@@ -10,6 +13,7 @@ from API.AccountManager import AccountManager # 🎯 AccountManager 임포트
 
 class RealtimeManager:
     def __init__(self, target_list, acc_no, acc_flag, trade_budget, logger):
+        self.cfg = path_finder.get_cfg()
         # ... (기존 초기화 로직 동일) ...
         self.logger = logger
         self.acc_no = acc_no
@@ -41,6 +45,25 @@ class RealtimeManager:
         # 🎯 [추가] 체결강도 상한선 (이상 수치 차단)
         self.strength_limit = 1000.0
         
+        self.trade_summary_path = self.cfg.DATA_DIR / "trade_summary.csv"
+        
+        self._init_logging()
+        
+    def _init_logging(self):
+        """로그 폴더 및 CSV 헤더 초기화 (중복 제거 통합본)"""
+        # if not os.path.exists(self.cfg.DATA_DIR): 
+        #     os.makedirs(self.cfg.DATA_DIR)
+        # path_config 에서 생성하므로 주석처리
+            
+        if not os.path.exists(self.trade_summary_path):
+            with open(self.trade_summary_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'Signal_ID', 'Code', 'Name', 'Expected_Entry', 'Actual_Entry', 
+                    'Slippage_Rate', 'Exit_Price', 'Return_Rate', 'MAE', 'MFE', 
+                    'Exit_Reason', 'Hold_Duration'
+                ])
+            
     def start_subscribing(self):
         """[업데이트] 160여 종목에 대해 현재가와 호가창 동시 감시"""
         if not self.targets: return
@@ -55,14 +78,28 @@ class RealtimeManager:
             
         self.logger.info(f"📡 [정밀 감시] {len(self.targets)}종목 수급+호가 데이터 분석 시작")
         
-    def on_realtime_data(self, data):
-        code = data.get('code')
-        dtype = data.get('type')
-        
-        if dtype == 'jpbidcnld':
+    def on_realtime_data(self, code, data):
+        """RealtimeDataManager에서 넘어오는 모든 콜백의 최상위 진입점"""
+        # 호가창 데이터 처리
+        if 'total_ask_vol' in data:
             self.process_orderbook(code, data)
-        elif dtype == 'cur':
-            self.process_tick(code, data)
+            return
+            
+        # 1. 포지션 관리 및 MAE/MFE 업데이트
+        if code in self.positions:
+            pos = self.positions[code]
+            curr_price = data.get('current', data.get('cur', 0))
+            
+            # MAE/MFE 추적 (최고/최저가 갱신)
+            pos['max_price'] = max(pos.get('max_price', curr_price), curr_price)
+            pos['min_price'] = min(pos.get('min_price', curr_price), curr_price)
+            
+            # 매도 조건 체크
+            self.manage_exit(code, curr_price)
+            return # 이미 보유 중인 종목은 매수 로직(아래)을 안 탐
+
+        # 2. 보유 중이 아니라면 틱 데이터 분석 (매수 신호 탐색)
+        self.process_tick(code, data)
 
     def force_exit_all(self):
         """보유 중인 모든 포지션 강제 매도"""
@@ -101,11 +138,6 @@ class RealtimeManager:
         tick_vol = data.get('tick_vol', 0)
         strength = data.get('strength', 0.0) # 현재 체결강도
         
-        # 1. 매도 관리
-        if code in self.positions:
-            self.manage_exit(code, curr_price)
-            return
-
         # 2. 거래량 누적 (최근 10초 슬라이딩 윈도우)
         now = time.time()
         self.vol_windows[code].append((now, tick_vol))
@@ -125,11 +157,13 @@ class RealtimeManager:
     def analyze_combined_signal(self, code, data, strength, accel):
         """거래량 폭발 + 체결강도 가속도 + 호가창 잔량 통합 분석"""
         price = data.get('current', 0)
+        if price <= 0: return
         
         # 1. 거래량 폭발 계산 (10초 -> 1분 예측)
         ten_sec_vol = sum(v for t, v in self.vol_windows[code])
         predicted_1m_vol = ten_sec_vol * 6
         base_vol_1m = self.avg_vol_1m.get(code, 0)
+        
         if base_vol_1m <= 0: return
         vol_multiple = predicted_1m_vol / base_vol_1m
         
@@ -152,66 +186,7 @@ class RealtimeManager:
                             f"폭발:{vol_multiple:.1f}배 | 강도:{strength:.1f}% | "
                             f"호가비율:{ob['ratio']:.2f}")
             self.execute_buy(code, data.get('name'), price)
-                   
-    # def analyze_volume_spike(self, code, data):
-    #     """거래량 예측 돌파 전략 분석"""
-    #     if len(self.positions) >= self.max_positions: return
-    #     if self.buy_signals.get(code, False): return
-        
-    #     price = data.get('current', 0)
-    #     diff = data.get('diff', 0) # 전일 대비 등락
-        
-    #     # [조건 1] 상승 중인 종목인가?
-    #     if diff <= 0: return
-
-    #     # [조건 2] 10초 누적 거래량 계산
-    #     ten_sec_vol = sum(v for t, v in self.vol_windows[code])
-        
-    #     # [조건 3] 1분 거래량 예측 (10초 * 6)
-    #     predicted_1m_vol = ten_sec_vol * 6
-        
-    #     # [조건 4] 60일 평균 분당 거래량과 비교 (예: 15배 초과 시)
-    #     base_vol_1m = self.avg_vol_1m.get(code, 0)
-    #     if base_vol_1m <= 0: return
-        
-    #     multi_level = 15.0 # 배수 설정 (10~20배 사이 권장)
-        
-    #     if predicted_1m_vol > (base_vol_1m * multi_level):
-    #         # 호가창 잔량 확인 (매도잔량이 매수잔량보다 많아야 위로 쏠 에너지가 있음)
-    #         state = self.orderbook_state.get(code)
-    #         if state and state['total_ask_vol'] > state['total_bid_vol']:
-    #             self.logger.info(f"🚀 [폭발 포착] {data.get('name')} | 예측1분:{int(predicted_1m_vol)} > 평균1분:{int(base_vol_1m)} ({multi_level}배 돌파)")
-    #             self.execute_buy(code, data.get('name'), price)
-                
-    # def analyze_entry(self, code, data, strength, delta):
-    #     """매수 타점 분석 및 주문 집행"""
-        
-    #     if len(self.positions) >= self.max_positions:
-    #         return
-        
-    #     if self.buy_signals.get(code, False): return
-        
-    #     price = data.get('current', 0)
-    #     vol = data.get('tick_vol', 0)
-    #     buy_sell = data.get('side') # '1': 매수체결, '2': 매도체결
-        
-    #     # 거래량 Spike 체크
-    #     history = self.volume_history.get(code)
-    #     avg_vol = sum(history) / len(history) if len(history) >= 5 else 999999
-    #     history.append(vol)
-        
-    #     state = self.orderbook_state.get(code)
-    #     if not state or state['total_bid_vol'] == 0: return
-
-    #     # 전략 필터 (호가밀도, 강도 가속도, 거래량 폭발)
-    #     # print(f"code: {code} | {state['spread']} | {state['is_dense']} | {strength} | {round(delta,2)} | {vol} | {round(avg_vol, 2)}")
-    #     if state['spread'] <= self.get_tick_size(price) and state['is_dense']:
-    #         if strength >= 110.0 and delta >= 1.0:
-    #             if buy_sell == '1' and (vol >= 1000 and vol >= avg_vol * 5.0):
-    #                 if state['total_ask_vol'] >= (state['total_bid_vol'] * 1.5):
-    #                     # 🎯 실제 매수 주문 집행
-    #                     self.execute_buy(code, data.get('name'), price)
-
+    
     def execute_buy(self, code, name, price):
         """매수 주문 실행 (서버 조회 없이 로컬 예산 기반으로 즉시 집행)"""
         # 1. 방어 로직
@@ -231,118 +206,107 @@ class RealtimeManager:
         if code in self.sold_codes:
             return
 
-        self.logger.info(f"🔥 [매수 요청] {name}({code}) | 수량: {final_buy_qty}주 | 예상금액: {final_buy_qty * price:,}원")
+        self.logger.info(f"🔥 [매수 요청] {name}({code}) | 수량: {final_buy_qty}주")
         
         # 시장가(03) 주문 실행
         try:
             # 주문 유형: "2" (매수), "03" (시장가)
             self.om.request_new_order(self.acc_no, self.acc_flag, code, final_buy_qty, 0, order_type="2", hoga_flag="03")
             
-            # 임시 포지션 등록 (체결 확인 전까지 중복 주문 방지용)
+           # MAE/MFE 추적을 위해 임시 포지션 정보 바로 생성
+            signal_id = f"{datetime.now().strftime('%H%M%S')}_{code}"
+            self.positions[code] = {
+                'signal_id': signal_id,
+                'name': name,
+                'qty': final_buy_qty,
+                'expected_entry_price': price, # 실제 매수가(buy_price)로 쓸 기준
+                'actual_entry_price': price,   # 체결 전까지는 예상가와 동일하게 세팅
+                'entry_time': time.time(),
+                'max_price': price,
+                'min_price': price,
+                'is_concluded': False
+            }
             self.buy_signals[code] = True 
-            
-            # positions 업데이트는 on_order_confirmed에서 처리됨
         except Exception as e:
             self.logger.error(f"❌ 주문 중 오류 발생: {e}")
 
     # RealtimeManager.py 내 on_order_confirmed 수정
-    def on_order_confirmed(self, data):
-        if data['status'] == 'CONCLUDED':
-            code = data['stock_code']
-            exec_qty = data['volume']
-            exec_price = data['price']
+    def on_order_confirmed(self, concl_data):
+        """OrderManager로부터 실제 체결 정보를 전달받음"""
+        code = concl_data['code']
+        if code in self.positions:
+            pos = self.positions[code]
+            pos['actual_entry_price'] = concl_data['actual_price']
+            pos['is_concluded'] = True
             
-            if data['side'] == 'BUY':
-                if code in self.positions:
-                    pos = self.positions[code]
-                    
-                    # 🎯 가중 평균 단가 및 수량 합산 (정확한 로직)
-                    current_total_cost = pos['buy_price'] * pos['qty']
-                    new_fill_cost = exec_price * exec_qty
-                    
-                    pos['qty'] += exec_qty # 기존 수량에 더하기
-                    pos['buy_price'] = (current_total_cost + new_fill_cost) / pos['qty']
-                    
-                    # 추가 매수 시 최고가는 현재 체결가와 기존 최고가 중 큰 것으로 갱신
-                    pos['highest_price'] = max(pos.get('highest_price', 0), exec_price)
-                    
-                    self.logger.info(f"✅ [매수 추가체결] {data['name']} | +{exec_qty}주 | 총: {pos['qty']}주 | 평단: {pos['buy_price']:,.0f}원")
-                else:
-                    # 신규 진입
-                    self.positions[code] = {
-                        'name': data['name'],
-                        'buy_price': exec_price,
-                        'highest_price': exec_price,
-                        'qty': exec_qty,
-                        'entry_time': time.time()
-                    }
-                    self.logger.info(f"✅ [매수 신규체결] {data['name']} | {exec_qty}주 | 평단가: {exec_price:,.0f}원")
-                    
-            elif data['side'] == 'SELL':
-                if code in self.positions:
-                    # 🎯 핵심: 전체 수량에서 체결된 만큼만 뺍니다.
-                    self.positions[code]['qty'] -= exec_qty
-                    
-                    self.logger.info(f"✅ [매도 체결] {data['name']} | -{exec_qty}주 (남은 수량: {self.positions[code]['qty']}주)")
-                    
-                    # 🎯 남은 수량이 0 이하일 때만 포지션에서 완전히 삭제
-                    if self.positions[code]['qty'] <= 0:
-                        # 🎯 [재매수 금지] 매도 완료 시 당일 금지 목록에 추가
-                        self.sold_codes.add(code)
-                        self.logger.info(f"🏁 [매도 완료] {data['name']} 포지션 종료")
-                        del self.positions[code]
-                        if code in self.is_exiting:
-                            del self.is_exiting[code]
-                    
+            # 슬리피지 계산
+            slippage = (pos['actual_entry_price'] - pos['expected_entry_price']) / pos['expected_entry_price']
+            self.logger.info(f"✅ {pos['name']} 체결 완료 | 슬리피지: {slippage:.4%}")
+                       
     def manage_exit(self, code, curr_price):
         """트레일링 스탑 및 손절 관리"""
-        if code not in self.positions or self.is_exiting.get(code, False):
+        if self.is_exiting.get(code, False):
             return
 
         pos = self.positions[code]
-        buy_price = pos['buy_price']
+        # 에러 수정: 'buy_price' 대신 'actual_entry_price' 사용
+        buy_price = pos.get('actual_entry_price', pos['expected_entry_price'])
         
-        # 🎯 highest_price가 없으면 현재가로 초기화 (KeyError 방지)
-        if 'highest_price' not in pos:
-            pos['highest_price'] = curr_price
-
-        # 1. 최고가 갱신
-        if curr_price > pos['highest_price']:
-            pos['highest_price'] = curr_price
-
-        # 2. 수익률 계산 (제비용 0.23% 반영)
         fee_tax_rate = 0.23
         current_profit = ((curr_price - buy_price) / buy_price * 100) - fee_tax_rate
-        highest_profit = ((pos['highest_price'] - buy_price) / buy_price * 100) - fee_tax_rate
+        highest_profit = ((pos['max_price'] - buy_price) / buy_price * 100) - fee_tax_rate
 
-        # 🎯 3. 매도 판단 로직
         sell_reason = None
 
-        # A. 트레일링 스탑 (수익 보전)
-        # 설정한 활성화 수익률(0.5%)을 넘긴 적이 있고, 최고가 수익률 대비 지정된 폭(0.3%)만큼 하락했을 때
         if highest_profit >= self.ts_activation_pct:
             if current_profit <= (highest_profit - self.ts_callback_pct):
                 sell_reason = f"TS(최고 {highest_profit:.2f}% 대비 {self.ts_callback_pct}% 하락)"
-
-        # B. 하드 손절 (방어선)
-        if current_profit <= self.hard_stop_loss:
+        elif current_profit <= self.hard_stop_loss:
             sell_reason = f"손절(기준선 {self.hard_stop_loss}%)"
 
         if sell_reason:
-            # 🎯 주문 전 실제 서버 잔고 수량 확인 (동기화 실패 대비)
-            actual_balance = self.am.get_present_balance() # AccountManager에 구현된 함수라 가정
+            actual_balance = self.am.get_present_balance() 
             actual_qty = actual_balance.get(code, {}).get('qty', 0)
             
             sell_qty = min(pos['qty'], actual_qty) if actual_qty > 0 else pos['qty']
             
             if sell_qty <= 0:
-                self.logger.error(f"❌ [매도 실패] {pos['name']} 서버 잔고 없음 (로컬:{pos['qty']}주)")
-                del self.positions[code] # 잔고가 없으므로 포지션 삭제
+                self.logger.error(f"❌ [매도 실패] {pos['name']} 서버 잔고 없음")
+                self.write_final_log(code, curr_price, "에러-잔고없음")
                 return
 
             self.logger.info(f"💰 [매도 실행] {pos['name']} | {sell_reason} | 수량: {sell_qty}주")
             self.is_exiting[code] = True
             self.om.request_new_order(self.acc_no, self.acc_flag, code, sell_qty, 0, order_type="1", hoga_flag="03")
+            
+            # 매도 주문 즉시 로그를 기록하고 포지션 해제
+            self.write_final_log(code, curr_price, sell_reason)
+    
+    def write_final_log(self, code, exit_price, reason):
+        """매매 종료 시 최종 결과 CSV 기록"""
+        pos = self.positions.get(code)
+        if not pos: return
+
+        entry_price = pos.get('actual_entry_price', pos['expected_entry_price'])
+        ret_rate = (exit_price - entry_price) / entry_price
+        mae = (pos['min_price'] - entry_price) / entry_price
+        mfe = (pos['max_price'] - entry_price) / entry_price
+        duration = time.time() - pos['entry_time']
+        slippage = (entry_price / pos['expected_entry_price']) - 1
+
+        with open(self.trade_summary_path, 'a', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                pos['signal_id'], code, pos['name'], pos['expected_entry_price'], 
+                entry_price, round(slippage*100, 4),
+                exit_price, round(ret_rate*100, 2), round(mae*100, 2), round(mfe*100, 2),
+                reason, round(duration, 1)
+            ])
+        
+        self.logger.info(f"📊 {pos['name']} 매도 완료 ({reason}) | 수익률: {ret_rate:.2%}")
+        del self.positions[code]
+        if code in self.is_exiting:
+            del self.is_exiting[code]
             
     def get_tick_size(self, price):
         if price < 2000: return 1
@@ -360,67 +324,23 @@ class RealtimeManager:
     
     # RealtimeManager.py에 추가할 메서드
 
-def sync_balance_with_server(self):
-    """서버의 실제 잔고를 가져와 로컬 positions를 동기화합니다."""
-    server_positions = self.am.get_present_balance() # AccountManager의 잔고 조회 함수
-    
-    for code, info in server_positions.items():
-        if code in self.positions:
-            # 수량이 다를 경우 서버 데이터 기준으로 업데이트
-            if self.positions[code]['qty'] != info['qty']:
-                self.logger.warning(f"⚠️ [잔고 불일치 수정] {info['name']}: 로컬({self.positions[code]['qty']}) -> 서버({info['qty']})")
-                self.positions[code]['qty'] = info['qty']
-        else:
-            # 로컬에는 없는데 서버에 있는 경우 (예: 프로그램 재시작 시)
-            self.positions[code] = {
-                'name': info['name'],
-                'buy_price': info['buy_price'],
-                'highest_price': info['current_price'],
-                'qty': info['qty'],
-                'entry_time': time.time()
-            }
-                
-    # RealtimeManager.py 내부 추가 및 수정
-
-    # def update_targets(self, new_target_list):
-    #     """TradingBot에서 호출: 기존 포지션은 유지하며 감시 대상 종목만 교체"""
-    #     print(f"🔄 감시 종목 업데이트 중... (기존 포지션 유지)")
-
-    #     # 🎯 1. 수정: rdm.monitored_codes 대신 직접 만든 subscribed_codes 사용!
-    #     current_subscribed_codes = set(self.subscribed_codes) 
+    def sync_balance_with_server(self):
+        """서버의 실제 잔고를 가져와 로컬 positions를 동기화합니다."""
+        server_positions = self.am.get_present_balance() # AccountManager의 잔고 조회 함수
         
-    #     # 2. 새로운 타깃 코드 목록 (보유 종목 포함)
-    #     new_target_codes = {t['code'] for t in new_target_list}
-    #     holding_codes = set(self.positions.keys())
-        
-    #     # 최종 유지해야 할 전체 코드 (타깃 + 현재 보유 중인 종목)
-    #     final_codes = new_target_codes | holding_codes
-        
-    #     # 3. 삭제 대상: 현재 구독 중이지만 final_codes에 없는 종목
-    #     to_unsubscribe = current_subscribed_codes - final_codes
-    #     for code in to_unsubscribe:
-    #         self.rdm.stop_monitoring(code)
-    #         self.subscribed_codes.discard(code) # 🎯 내 리스트에서도 삭제
-    #         if code in self.buy_signals: del self.buy_signals[code]
-            
-    #     # 4. 추가 대상: final_codes에 있지만 아직 구독 중이 아닌 종목
-    #     to_subscribe = final_codes - current_subscribed_codes
-    #     for code in to_subscribe:
-    #         # 종목명 찾기 (new_target_list 또는 positions에서)
-    #         name = next((t['name'] for t in new_target_list if t['code'] == code), "Unknown")
-    #         if name == "Unknown" and code in self.positions:
-    #             name = self.positions[code]['name']
-                
-    #         # 상태 변수 초기화
-    #         self.buy_signals[code] = False
-    #         self.orderbook_state[code] = {'total_ask_vol': 0, 'total_bid_vol': 0, 'spread': 9999, 'is_dense': False}
-    #         if code not in self.volume_history:
-    #             self.volume_history[code] = deque(maxlen=20)
-            
-    #         # 실제 구독 시작
-    #         self.rdm.start_monitoring(code, types=['cur', 'jpbidcnld'])
-    #         self.subscribed_codes.add(code) # 🎯 [추가] 새 종목도 내 리스트에 등록
-    #         print(f"   ➕ 새 감시 추가: {name}({code})")
-
-    #     # 5. 내부 targets 리스트 갱신
-    #     self.targets = new_target_list
+        for code, info in server_positions.items():
+            if code in self.positions:
+                # 수량이 다를 경우 서버 데이터 기준으로 업데이트
+                if self.positions[code]['qty'] != info['qty']:
+                    self.logger.warning(f"⚠️ [잔고 불일치 수정] {info['name']}: 로컬({self.positions[code]['qty']}) -> 서버({info['qty']})")
+                    self.positions[code]['qty'] = info['qty']
+            else:
+                # 로컬에는 없는데 서버에 있는 경우 (예: 프로그램 재시작 시)
+                self.positions[code] = {
+                    'name': info['name'],
+                    'buy_price': info['buy_price'],
+                    'highest_price': info['current_price'],
+                    'qty': info['qty'],
+                    'entry_time': time.time()
+                }
+      
