@@ -19,8 +19,10 @@ class TradingBot:
         # 0. CreonAPI 통합 객체 생성
         self.api = CreonAPI()
         self.logger = AsyncLogger()
-        
-        
+        # 엔진 초기화
+        self.builder = UniverseBuilder()
+        self.manager = None 
+         
         # 1. 서버 연결 상태 확인
         if self.api.obj_cybos.IsConnect == 0:
             self.logger.info("❌ CYBOS 연결 실패. 프로그램을 종료합니다.")
@@ -45,14 +47,8 @@ class TradingBot:
         
         # 🎯 메서드로 분리된 실잔고 동기화 호출
         self.trade_budget = 0  # 🎯 초기값 선언
-        self.update_budget() # 초기 예산 설정
         self.set_initial_budget() # 초기 1회 실행
-        self.initial_positions = self.sync_account_positions()
-            
-        # 엔진 초기화
-        self.builder = UniverseBuilder()
-        self.manager = None 
-    
+         
     def set_initial_budget(self):
         """장 시작 시 총 자산의 1/10을 매매 한도로 고정합니다."""
         deposit_data = self.account.get_expected_deposit()
@@ -79,7 +75,14 @@ class TradingBot:
     def run(self):
         """봇 메인 루프 실행"""
         
-        universe = self.builder.load_universe()
+        # 1. 무조건 새로 빌드하고 싶을 때 (가장 확실함)
+        self.logger.info("🔍 오늘의 유니버스 구축을 시작합니다...")
+        # universe = self.builder.build_universe()
+        universe = self.builder.load_universe() 
+
+        # 2. 만약 이미 오늘 빌드했다면 로드만 하고 싶을 때 (위의 build_universe 대신 사용)
+        # universe = self.builder.load_universe() 
+        
         if not universe:
             self.logger.info("❌ 유니버스 구축 실패.")
             return
@@ -95,7 +98,7 @@ class TradingBot:
         while True:
             try:
                 # 🎯 [추가] 장 마감 시각 체크 (15:20)
-                now = datetime.now()
+                now = datetime.now() # ✅ 정상 작동
                 exit_time = now.replace(hour=15, minute=20, second=0, microsecond=0)
                 
                 if now >= exit_time:
@@ -121,7 +124,12 @@ class TradingBot:
                         last_budget_update = time.time()
                     
                 if self.manager is None:
-                    self.manager = RealtimeManager(targets, self.acc_no, self.acc_flag, self.trade_budget, self.logger)
+                    self.manager = RealtimeManager(targets, 
+                                                   self.acc_no, 
+                                                   self.acc_flag, 
+                                                   self.trade_budget, 
+                                                   self.logger,
+                                                   self.account)
                     self.manager.om.set_callback(self.manager.on_order_confirmed)
                     # 🎯 시작 직후 최초 1회 실잔고 동기화
                     self.manager.sync_balance_with_server() 

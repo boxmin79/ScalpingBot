@@ -174,7 +174,7 @@ class AccountManager:
         self.obj_sellalble.BlockRequest()
 
        # 3. 결과 파싱
-        count = self.obj.GetHeaderValue(0)
+        count = self.obj_sellalble.GetHeaderValue(0)
         if count == 0:
             return 0
         data = {
@@ -487,9 +487,28 @@ class AccountManager:
         
 if __name__ == "__main__":
     am = AccountManager()
-    # am.get_balance_data()
-    data = am.get_profit_loss_data()
-    print(data)
+    summary, data = am.get_profit_loss_data()
+
+    if summary:
+        print("\n" + "="*50)
+        print("📊 [Summary 데이터 타입 및 원본 값 확인]")
+        print("="*50)
+        
+        for key, value in summary.items():
+            # type(value)를 통해 실제 파이썬이 인식하는 타입을 출력합니다.
+            print(f"🔹 키(Key): {key:<18} | 타입: {str(type(value)):<15} | 값: {repr(value)}")
+        
+        print("="*50)
+        
+        # 💡 추가 분석: 산술 연산 가능 여부 테스트
+        try:
+            test_calc = summary.get('total_yield', 0) * 1.0
+            print("✅ 확인: 'total_yield'는 숫자 타입이므로 산술 연산이 가능합니다.")
+        except TypeError:
+            print("❌ 주의: 'total_yield'가 문자열(str)로 들어와 산술 연산이 불가능합니다.")
+    else:
+        print("❌ 데이터를 가져오지 못했습니다. API 연결 상태를 확인하세요.")
+    
     
         
         

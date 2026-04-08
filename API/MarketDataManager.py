@@ -107,7 +107,7 @@ class MarketDataManager:
                        chart_type='D', 
                        cycle=1,
                        adjusted_flag:str='1', # 1: Adjusted<ctrl63>Stock Price 
-                       mkt_type:str='K'
+                       mkt_type:str='K',
                        ):
         """_summary_
 
@@ -126,8 +126,8 @@ class MarketDataManager:
         """
         # 1. 요청 필드 설정 (0:날짜, 1:시간, 2:시가, 3:고가, 4:저가, 5:종가, 8:거래량, 9:거래대금)
         # 중요: GetDataValue는 필드값의 오름차순 인덱스로 반환됨
-        fields = [0, 1, 2, 3, 4, 5, 8, 9] 
-        
+        fields = [0, 1, 2, 3, 4, 5, 8, 9, 10, 11] 
+                
         self.obj_chart.SetInputValue(0, stk_code)
         self.obj_chart.SetInputValue(1, ord(req_type))    # '1':기간, '2':개수
         if req_type == '1':
@@ -139,7 +139,7 @@ class MarketDataManager:
         self.obj_chart.SetInputValue(6, ord(chart_type))  # 차트 구분
         self.obj_chart.SetInputValue(7, cycle)            # 주기
         self.obj_chart.SetInputValue(9, adjusted_flag)    # 수정 주가 반영
-        self.obj_chart.SetInputValue(12, ord(mkt_type))    # 수정 주가 반영
+        self.obj_chart.SetInputValue(12, ord(mkt_type))    # 거래소 구분
 
         results = []
         current_count = 0
@@ -162,7 +162,7 @@ class MarketDataManager:
 
             # 3. 헤더 정보 확인
             recv_count = self.obj_chart.GetHeaderValue(3) # 실제 수신 개수
-            fields_array = ('date', 'time', 'open', 'high', 'low', 'close', 'vol', 'amt')
+            fields_array = ('date', 'time', 'open', 'high', 'low', 'close', 'vol', 'amt', 'cum_sell_vol', 'cum_buy_vol')
             # fields_array = self.obj_chart.GetHeaderValue(2) # 필드 배열
             # 4. 데이터 추출 (중첩 루프 사용)
             for i in range(recv_count):
@@ -412,6 +412,6 @@ if __name__ == "__main__":
     from datetime import datetime, timedelta
     mdm = MarketDataManager()
     
-    data = mdm.get_chart_data("A000150", req_type='2', target_count=20)
+    data = mdm.get_chart_data("A000150", req_type='2', chart_type='m', target_count=20)
     print(data)
     

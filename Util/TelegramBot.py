@@ -94,37 +94,60 @@ class TelegramBot:
             self.send_message(f"❓ '{cmd}'은(는) 등록되지 않은 명령어입니다.")
 
     def send_profit_loss_report(self):
+        """매매 손익 리포트 전송 (소수점 보존 및 개별 항목 정밀 출력)"""
         summary, details = self.am.get_profit_loss_data()
         if not summary:
             self.send_message("❌ 데이터를 가져오지 못했습니다.")
             return
 
-        # 헬퍼 함수: 빈 문자열이나 None을 안전하게 숫자로 변환
-        def to_int(val):
-            try: return int(val) if val and str(val).strip() else 0
-            except: return 0
+        # 1. 헬퍼 함수 정의 (타입 에러 방지용)
+        def to_money_header(val):
+            """헤더용: 천 원 -> 원 단위 변환 (문자열 대응)"""
+            try:
+                return int(float(str(val).replace(',', '').strip())) * 1000
+            except:
+                return 0
+
+        def to_int_pure(val):
+            """상세 내역용: 원 단위 그대로 정수 변환"""
+            try:
+                return int(float(str(val).replace(',', '').strip()))
+            except:
+                return 0
 
         def to_float(val):
-            try: return float(val) if val and str(val).strip() else 0.0
-            except: return 0.0
+            """수익률용: 소수점 유실 방지 (float 강제 형변환)"""
+            try:
+                if val is None or str(val).strip() == "": return 0.0
+                return float(str(val).replace(',', ''))
+            except:
+                return 0.0
+
+        # 2. 요약 데이터 가공
+        realized_pl = to_money_header(summary.get('total_realized_pl'))
+        eval_pl = to_money_header(summary.get('total_eval_pl'))
+        # API 제공 수익률을 사용하되, float로 변환하여 절삭 오류 방지
+        total_yield = to_float(summary.get('total_yield'))
 
         msg = "📊 *금일 매매 손익 리포트*\n"
         msg += "--------------------------\n"
-        # 안전하게 변환 후 포맷팅 적용
-        msg += f"💰 *실현 손익:* {to_int(summary.get('total_realized_pl')):,}원\n"
-        msg += f"📈 *평가 손익:* {to_int(summary.get('total_eval_pl')):,}원\n"
-        msg += f"📉 *당일 수익률:* {to_float(summary.get('total_yield')):.2f}%\n"
+        msg += f"💰 *실현 손익:* {realized_pl:,}원\n"
+        msg += f"📈 *평가 손익:* {eval_pl:,}원\n"
+        msg += f"📉 *당일 수익률:* {total_yield:.2f}%\n"
         msg += "--------------------------\n\n"
 
+        # 3. 상세 내역 출력
         if not details:
             msg += "매매 내역이 없습니다."
         else:
             for item in details:
-                # 개별 항목 안전 변환
+                # 개별 종목 수익률 및 손익 추출
                 item_yield = to_float(item.get('yield'))
-                item_pl = to_int(item.get('realized_pl'))
+                item_pl = to_int_pure(item.get('realized_pl'))
                 
+                # 수익률에 따른 이모지 설정 (빨강: 상승, 파랑: 하락)
                 emoji = "🔴" if item_yield > 0 else "🔵" if item_yield < 0 else "⚪"
+                
                 msg += f"{emoji} *{item.get('name', '알 수 없음')}*\n"
                 msg += f"   - 실현: {item_pl:,}원 ({item_yield:.2f}%)\n"
         
@@ -138,16 +161,19 @@ class TelegramBot:
             self.send_message("❌ 잔고 데이터를 가져오지 못했습니다.")
             return
 
-        # 헬퍼 함수: 에러 방지를 위한 안전한 숫자 변환
+        # 헬퍼 함수: 금액용 (원 단위 그대로 사용, 소수점만 제거)
         def to_int(val):
             try:
-                return int(float(val)) if val and str(val).strip() else 0
+                if val is None or str(val).strip() == "": return 0
+                return int(float(str(val).replace(',', '')))
             except:
                 return 0
 
+        # 헬퍼 함수: 수익률용 (소수점 유지)
         def to_float(val):
             try:
-                return float(val) if val and str(val).strip() else 0.0
+                if val is None or str(val).strip() == "": return 0.0
+                return float(str(val).replace(',', ''))
             except:
                 return 0.0
 

@@ -54,6 +54,9 @@ class OrderManager:
         actual_price = self.obj_conclusion.GetHeaderValue(4) # 체결가
         concluded_qty = self.obj_conclusion.GetHeaderValue(3) # 🎯 체결 수량 추출
         status = self.obj_conclusion.GetHeaderValue(14)      # 체결 상태
+        # 🎯 [추가] 매수/매도 구분값 추출 (인덱스 12)
+        # 대신증권 기준: '1'은 매도, '2'는 매수
+        side = self.obj_conclusion.GetHeaderValue(12)
         
         # '1'(체결) 또는 '2'(확인) 상태일 때 콜백 전달
         if status in ['1', '2'] and self.callback:
@@ -61,7 +64,8 @@ class OrderManager:
                 'code': code,
                 'name': name,
                 'actual_price': actual_price,
-                'concluded_qty': concluded_qty # 🎯 수량 데이터 추가
+                'concluded_qty': concluded_qty, # 🎯 수량 데이터 추가
+                'side': str(side) # 🎯 RealtimeManager에서 비교하기 쉽게 문자열로 변환 
             }
             self.callback(concl_data)
                 
