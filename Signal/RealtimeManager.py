@@ -211,21 +211,19 @@ class RealtimeManager:
         ratio = ob['ratio'] if ob else 0.0
         
         # 🎯 [핵심 필터 적용]
-        # - 거래량 15배 돌파
-        # - 체결강도 110% 이상이며 1000% 이하 (이상치 제거)
-        # - 가속도 1.5 이상
+        # - 체결강도 증가 가속도 1.5 이상
         # - 매도잔량 우위 (호가창 필터)
         # 🎯 [통합 필터] 매수 조건 충족 시 모든 스냅샷 전달
         # if (vol_multiple > 15.0 and is_price_rising and
-        if (amt_multiple > 15.0 and is_price_rising and 
-            110.0 <= strength <= self.strength_limit and 
+        # 테스트 결과에 따라 거래대금멀티플 5배, 체결강도 105
+        if (amt_multiple > 5.0 and is_price_rising and 
+            105.0 <= strength <= self.strength_limit and 
             accel >= 1.5 and ratio >= 1.2):
             
             self.logger.info(f"🚀 [진짜 수급 포착] {data.get('name')} | "
-                            # f"폭발:{vol_multiple:.1f}배 | 강도:{strength:.1f}% | "
-                            f"대금폭발:{amt_multiple:.1f}배 | 강도:{strength:.1f}% | "
-                            f"현재가:{price:,} | 3초전:{p_3s if p_3s else '미확인'} | "
-                            f"호가비율:{ob['ratio']:.2f}")
+                f"대금폭발:{amt_multiple:.1f}배 | 강도:{strength:.1f}% | 가속도:{accel:.2f} | "
+                f"현재가:{price:,} | 3초전:{p_3s if p_3s else '미확인'} | "
+                f"호가비율:{ob['ratio']:.2f}")
             
             # 🔥 스냅샷 데이터를 묶어서 전달
             snapshots = {
@@ -233,10 +231,13 @@ class RealtimeManager:
                 'entry_amt_multiple': amt_multiple, # 변수명 변경
                 'entry_strength': strength,
                 'entry_ob_ratio': ratio,
+                'entry_accel' : accel,
                 'p_1s': p_1s,
                 'p_3s': p_3s,
                 'p_5s': p_5s,
-                'entry_price': price
+                'entry_price': price,
+                
+                
             }
             
             # 🔥 [수정] execute_buy 호출 시 멀티플과 체결강도 데이터를 함께 넘김
@@ -252,7 +253,6 @@ class RealtimeManager:
         # 10시 30분 이후 매수 금지를 원할 경우
         # if now.hour > 10 or (now.hour == 10 and now.minute >= 30):
         if now.hour >= 11:
-            return
             # 신호가 올 때마다 로그가 너무 많이 찍히는 것을 방지하기 위해 
             # 필요에 따라 주석 처리하시거나 로깅 레벨을 조절하세요.
             self.logger.info(f"⏰ [시간 제한] {name} | 11시 이후 신규 매수 금지")
@@ -303,6 +303,7 @@ class RealtimeManager:
                 'entry_amt_multiple': round(float(snapshots['entry_amt_multiple']), 2),
                 'entry_strength': round(float(snapshots['entry_strength']), 1),
                 'entry_ob_ratio': round(float(snapshots['entry_ob_ratio']), 2),
+                'entry_accel' : round(float(snapshots['entry_accel']), 2),
                 'p_1s': snapshots['p_1s'],
                 'p_3s': snapshots['p_3s'],
                 'p_5s': snapshots['p_5s'],
@@ -347,15 +348,24 @@ class RealtimeManager:
 
         # --- [CASE 2] 매도 체결 ('1') ---
         elif side == '1':
-            self.logger.info(f"✨ [매도체결] {pos['name']}({code}) 전량 체결 완료")
+            code = concl_data['code']
+            pos = self.positions[code]
             
-            # 교착 상태 방지 플래그 해제
-            if code in self.is_exiting:
-                del self.is_exiting[code]
+            # 실제 체결된 수량만큼 차감
+            pos['qty'] -= concl_data['concluded_qty']
             
-            # 당일 재매수 방지 목록 추가 및 포지션 제거
-            # self.sold_codes.add(code)
-            del self.positions[code]
+            # 🎯 핵심: 잔고가 0이 되었을 때만 최종 리포트 작성 및 포지션 삭제
+            if pos['qty'] <= 0:
+                self.logger.info(f"✨ [매도완료] {pos['name']}({code}) 전량 체결")
+                
+                # 최종 로그 기록 (여기서 한 번만 호출됨)
+                self.write_final_log(code, concl_data['actual_price'], "매도 완료")
+                
+                if code in self.is_exiting:
+                    del self.is_exiting[code]
+                del self.positions[code]
+            else:
+                self.logger.info(f"⏳ [부분매도] {pos['name']} 남은 수량: {pos['qty']}주")
 
                                
     def manage_exit(self, code, curr_price):
@@ -394,7 +404,7 @@ class RealtimeManager:
             self.logger.info(f"💰 [매도 실행] {pos['name']} | {sell_reason} | 수량: {sell_qty}주")
             self.is_exiting[code] = True
             self.om.request_new_order(self.acc_no, self.acc_flag, code, sell_qty, 0, order_type="1", hoga_flag="03")
-            self.write_final_log(code, curr_price, sell_reason)
+            # self.write_final_log(code, curr_price, sell_reason)
     
     def sync_balance_with_server(self):
         """서버의 실제 잔고를 가져와 로컬 positions 동기화 (기존 데이터 보존)"""
@@ -503,6 +513,7 @@ class RealtimeManager:
             # "entry_v_mult": pos.get('entry_vol_multiple'),
             "entry_amt_mult": pos.get('entry_amt_multiple'),
             "entry_str": pos.get('entry_strength'),
+            "entry_accel": pos.get('entry_accel'),
             "p_diff_1s": round((pos['expected_entry_price'] - pos['p_1s'])/pos['p_1s']*100, 2) if pos['p_1s'] else 0,
             "p_diff_3s": round((pos['expected_entry_price'] - pos['p_3s'])/pos['p_3s']*100, 2) if pos['p_3s'] else 0,
             "p_diff_5s": round((pos['expected_entry_price'] - pos['p_5s'])/pos['p_5s']*100, 2) if pos['p_5s'] else 0,
