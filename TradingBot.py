@@ -111,6 +111,16 @@ class TradingBot:
                     self.stop()
                     break
                 
+                # 🎯 2. [신규 추가] 11시 이후 잔고 0개 시 조기 종료
+                # 11시 정각을 기준 시간으로 설정
+                early_exit_time = now.replace(hour=11, minute=0, second=0, microsecond=0)
+                
+                # 현재 시간이 11시 이후이고, 매니저가 생성되어 있으며, 보유 포지션이 없다면
+                if now >= early_exit_time and self.manager is not None and len(self.manager.positions) == 0:
+                    self.logger.info(f"\n[{now.strftime('%H:%M:%S')}] 🛑 11시 이후 잔고가 모두 청산되어 매매를 조기 종료합니다.")
+                    self.stop()
+                    break
+                
                 # 🎯 5분마다 Manager 스스로 동기화하도록 지시 (데이터 증발 방지)
                 if time.time() - last_sync_time > 300:
                     if self.manager:
@@ -130,6 +140,7 @@ class TradingBot:
                                                    self.trade_budget, 
                                                    self.logger,
                                                    self.account)
+                    self.logger.tel_bot.manager = self.manager
                     self.manager.om.set_callback(self.manager.on_order_confirmed)
                     # 🎯 시작 직후 최초 1회 실잔고 동기화
                     self.manager.sync_balance_with_server() 

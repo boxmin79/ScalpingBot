@@ -24,6 +24,8 @@ class TelegramBot:
             self.chat_id = self.fetch_chat_id_from_api()
         else:
             print(f"✅ Chat ID 로드 완료: {self.chat_id}")
+            
+        self.manager = None # 🎯 TradingBot에서 manager를 주입받을 변수 추가
 
     def send_message(self, message):
         """메시지 전송 (Markdown 지원)"""
@@ -80,7 +82,7 @@ class TelegramBot:
             
         elif cmd in ["/매매손익", "매매손익", "손익", "수익률"]:
             # "매매손익" 또는 "손익"이라고만 보내도 실행됨
-            self.send_profit_loss_report()
+            self.send_internal_profit_report() # 🎯 수정된 내부 리포트 함수 호출
         
         # 🎯 '잔고평가' 명령어 추가
         elif cmd in ["잔고평가", "잔고", "현황"]:
@@ -153,6 +155,31 @@ class TelegramBot:
         
         self.send_message(msg)
     
+    def send_internal_profit_report(self):
+        """내부 로직 기반 리포트 전송"""
+        if not self.manager:
+            self.send_message("❌ 매니저가 연결되지 않았습니다. (봇 가동 전)")
+            return
+
+        data = self.manager.get_internal_report_data()
+        
+        msg = "📊 *프로그램 내부 매매 리포트*\n"
+        msg += "--------------------------\n"
+        msg += f"💰 *실현 손익:* {data['realized_pl']:,}원\n"
+        msg += f"📈 *평가 손익:* {data['eval_pl']:,}원\n"
+        msg += f"📉 *당일 평균 수익률:* {data['total_yield']:.2f}%\n"
+        msg += "--------------------------\n\n"
+
+        if not data['details']:
+            msg += "오늘의 매매 내역이 아직 없습니다."
+        else:
+            for item in data['details']:
+                emoji = "🔴" if item['yield'] > 0 else "🔵"
+                msg += f"{emoji} *{item['name']}*\n"
+                msg += f"   - 실현: {item['pl']:,}원 ({item['yield']:.2f}%)\n"
+        
+        self.send_message(msg)
+        
     def send_balance_report(self):
         """실시간 잔고 및 보유 종목 현황 전송 (안전한 형변환 적용)"""
         summary, stocks = self.am.get_balance_data()

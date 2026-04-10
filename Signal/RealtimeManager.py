@@ -33,21 +33,23 @@ class RealtimeManager:
         # print(self.targets)
         
         self.prev_strength = {t['code']: 0.0 for t in self.targets} # 체결강도
-        self.avg_vol_1m = {t['code']: t.get('avg_vol_60', 0) / 390 for t in self.targets} # 60일 평균 분당 거래량
+        # self.avg_vol_1m = {t['code']: t.get('avg_vol_60', 0) / 390 for t in self.targets} # 60일 평균 분당 거래량
+        # JSON에 '원' 단위로 저장되어 있으므로, 곱하기 없이 바로 390으로 나눔
+        self.avg_amt_1m = {t['code']: t.get('avg_amt_60', 0) / 390 for t in self.targets}
         self.vol_windows = {t['code']: deque() for t in self.targets} # 분당 거래량 윈도우
         
         self.buy_signals = {} # 매수신호
-        self.sold_codes = set() # 매도 종목코드
+        # self.sold_codes = set() # 매도 종목코드
         self.positions = {} # 포지션
         self.max_positions = 10 # 최대 포지션 수
         self.orderbook_state = {} # 🎯 호가창 데이터를 담을 딕셔너리
         self.is_exiting = {}  # 매도 진행 중 여부
         self.subscribed_codes = set() #실시간 감시중인 목록
         
-        # 설정값 튜닝
-        self.ts_activation_pct = 0.5 # 트레일링 스탑
-        self.ts_callback_pct = 0.3 # 트레일링 스탑
-        self.hard_stop_loss = -1.2 # 손절선
+        # 설정값 튜닝 - 제안 1 (손익비 개선)
+        self.ts_activation_pct = 0.5   # (기존 0.5) 0.7% 수익 달성 시 TS 활성화
+        self.ts_callback_pct = 0.3     # (기존 0.3) 고점 대비 0.4% 하락 시 익절
+        self.hard_stop_loss = -1.2     # (기존 -1.2) 손절선을 -1.0%로 상향 (손실폭 축소)
         
         # 🎯 [추가] 체결강도 상한선 (이상 수치 차단)
         self.strength_limit = 1000.0
@@ -162,12 +164,27 @@ class RealtimeManager:
         if price <= 0: return
         
         # 1. 거래량 폭발 계산 (10초 -> 1분 예측)
-        ten_sec_vol = sum(v for t, v, p in self.vol_windows[code])
-        predicted_1m_vol = ten_sec_vol * 6
-        base_vol_1m = self.avg_vol_1m.get(code, 0)
+        # ten_sec_vol = sum(v for t, v, p in self.vol_windows[code])
+        # predicted_1m_vol = ten_sec_vol * 6
+        
         # print(base_vol_1m)
-        if base_vol_1m <= 0: return
-        vol_multiple = predicted_1m_vol / base_vol_1m
+        # if base_vol_1m <= 0: return
+        # vol_multiple = predicted_1m_vol / base_vol_1m
+        
+        # vol_windows에 저장된 (시간, 거래량, 가격)에서 거래량(v)과 가격(p)을 곱해 틱 거래대금을 구합니다.
+        ten_sec_amt = sum(v * p for t, v, p in self.vol_windows[code])
+        predicted_1m_amt = ten_sec_amt * 6
+        
+        ###################################################################
+        # 60일 평균 1분 거래대금 산출 (기존 평균 거래량 × 현재가로 근사치 계산)
+        # 🎯 유니버스에서 가져온 정확한 60일 평균 1분 거래대금 사용
+        base_amt_1m = self.avg_amt_1m.get(code, 0)
+        
+        if base_amt_1m <= 0: return
+        amt_multiple = predicted_1m_amt / base_amt_1m
+        ###################################################################
+        
+        
         
         # 2. 🎯 [다중 시간 가격 상승 체크]
         now = time.time()
@@ -199,18 +216,21 @@ class RealtimeManager:
         # - 가속도 1.5 이상
         # - 매도잔량 우위 (호가창 필터)
         # 🎯 [통합 필터] 매수 조건 충족 시 모든 스냅샷 전달
-        if (vol_multiple > 15.0 and is_price_rising and 
+        # if (vol_multiple > 15.0 and is_price_rising and
+        if (amt_multiple > 15.0 and is_price_rising and 
             110.0 <= strength <= self.strength_limit and 
             accel >= 1.5 and ratio >= 1.2):
             
             self.logger.info(f"🚀 [진짜 수급 포착] {data.get('name')} | "
-                            f"폭발:{vol_multiple:.1f}배 | 강도:{strength:.1f}% | "
+                            # f"폭발:{vol_multiple:.1f}배 | 강도:{strength:.1f}% | "
+                            f"대금폭발:{amt_multiple:.1f}배 | 강도:{strength:.1f}% | "
                             f"현재가:{price:,} | 3초전:{p_3s if p_3s else '미확인'} | "
                             f"호가비율:{ob['ratio']:.2f}")
             
             # 🔥 스냅샷 데이터를 묶어서 전달
             snapshots = {
-                'entry_vol_multiple': vol_multiple,
+                # 'entry_vol_multiple': vol_multiple,
+                'entry_amt_multiple': amt_multiple, # 변수명 변경
                 'entry_strength': strength,
                 'entry_ob_ratio': ratio,
                 'p_1s': p_1s,
@@ -223,9 +243,26 @@ class RealtimeManager:
             self.execute_buy(code, data.get('name'), price, snapshots)
             
     def execute_buy(self, code, name, price, snapshots):
-        """매수 주문 실행 (서버 조회 없이 로컬 예산 기반으로 즉시 집행)"""
+        """
+        매수 주문 실행 (서버 조회 없이 로컬 예산 기반으로 즉시 집행)
+        재매수 허용 & 11시 이후 매수 금지
+        """
+        # ⏰ 0. 시간 필터: 오전 11시 이후(11:00:00 부터) 신규 매수 차단
+        now = datetime.now()
+        # 10시 30분 이후 매수 금지를 원할 경우
+        # if now.hour > 10 or (now.hour == 10 and now.minute >= 30):
+        if now.hour >= 11:
+            return
+            # 신호가 올 때마다 로그가 너무 많이 찍히는 것을 방지하기 위해 
+            # 필요에 따라 주석 처리하시거나 로깅 레벨을 조절하세요.
+            self.logger.info(f"⏰ [시간 제한] {name} | 11시 이후 신규 매수 금지")
+            return
+        
         # 1. 방어 로직
         if price <= 0 or self.trade_budget <= 0 or len(self.positions) >= self.max_positions:
+            return
+        # 이미 보유 중인 경우 중복 매수 방지 (추가 매수를 원치 않을 경우 유지)
+        if code in self.positions:
             return
 
         # 🎯 [수정] 서버 통신(get_buyable_data)을 생략하고 로컬 예산으로 수량 계산
@@ -238,8 +275,8 @@ class RealtimeManager:
             return
 
         # 재매수 방지 로직 (sold_codes에 있으면 패스)
-        if code in self.sold_codes:
-            return
+        # if code in self.sold_codes:
+        #     return
 
         self.logger.info(f"🔥 [매수 요청] {name}({code}) | 수량: {final_buy_qty}주")
         
@@ -262,7 +299,8 @@ class RealtimeManager:
                 'max_price': price,
                 'min_price': price,
                 'is_concluded': False,
-                'entry_vol_multiple': round(float(snapshots['entry_vol_multiple']), 2),
+                # 'entry_vol_multiple': round(float(snapshots['entry_vol_multiple']), 2),
+                'entry_amt_multiple': round(float(snapshots['entry_amt_multiple']), 2),
                 'entry_strength': round(float(snapshots['entry_strength']), 1),
                 'entry_ob_ratio': round(float(snapshots['entry_ob_ratio']), 2),
                 'p_1s': snapshots['p_1s'],
@@ -316,7 +354,7 @@ class RealtimeManager:
                 del self.is_exiting[code]
             
             # 당일 재매수 방지 목록 추가 및 포지션 제거
-            self.sold_codes.add(code)
+            # self.sold_codes.add(code)
             del self.positions[code]
 
                                
@@ -389,6 +427,57 @@ class RealtimeManager:
                 }
         # self.logger.info("🔄 [시스템] 실잔고 동기화 완료")
 
+    # RealtimeManager.py 내부에 추가
+
+    def get_internal_report_data(self):
+        """내부 데이터를 기반으로 실시간/실현 손익 계산"""
+        realized_pl = 0
+        realized_details = []
+        
+        # 1. 실현 손익 계산 (JSONL 파일 읽기)
+        try:
+            if os.path.exists(self.trade_summary_path):
+                with open(self.trade_summary_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        data = json.loads(line)
+                        # (매도가 - 매수가) * 수량 (jsonl에 수량이 없으면 금액 기반 계산)
+                        # 여기서는 간단히 jsonl에 기록된 return_rate와 실제 투입 금액으로 추정하거나, 
+                        # jsonl 기록 시 'realized_amount'를 추가로 저장하는 것이 정확합니다.
+                        # 우선 기존 jsonl의 expected_entry와 return_rate를 활용합니다.
+                        entry_val = data['expected_entry'] * (data['actual_entry'] / data['expected_entry'])
+                        profit = entry_val * (data['return_rate'] / 100)
+                        
+                        realized_pl += profit
+                        realized_details.append({
+                            'name': data['name'],
+                            'pl': int(profit),
+                            'yield': data['return_rate']
+                        })
+        except Exception as e:
+            self.logger.error(f"내부 리포트 파일 읽기 오류: {e}")
+
+        # 2. 평가 손익 계산 (현재 보유 포지션)
+        unrealized_pl = 0
+        for code, pos in self.positions.items():
+            if pos.get('qty', 0) > 0:
+                # rdm 등에서 관리하는 최신가를 가져와야 함 (없으면 max_price로 대체)
+                curr_price = pos.get('max_price', pos['actual_entry_price']) 
+                buy_price = pos['actual_entry_price']
+                
+                profit = (curr_price - buy_price) * pos['qty']
+                unrealized_pl += profit
+
+        # 3. 전체 수익률 계산 (단순 합계 방식)
+        total_yield = 0
+        if realized_details:
+            total_yield = sum(d['yield'] for d in realized_details) / len(realized_details)
+
+        return {
+            'realized_pl': int(realized_pl),
+            'eval_pl': int(unrealized_pl),
+            'total_yield': total_yield,
+            'details': realized_details
+        }
 
     def write_final_log(self, code, exit_price, reason):
         """매매 종료 시 최종 결과 JSONL 기록 (데이터 타입 보존)"""
@@ -411,7 +500,8 @@ class RealtimeManager:
             "name": pos['name'],
             # 🔥 진입 당시 수급/가격 스냅샷 기록
             "entry_ob_ratio": pos.get('entry_ob_ratio'),
-            "entry_v_mult": pos.get('entry_vol_multiple'),
+            # "entry_v_mult": pos.get('entry_vol_multiple'),
+            "entry_amt_mult": pos.get('entry_amt_multiple'),
             "entry_str": pos.get('entry_strength'),
             "p_diff_1s": round((pos['expected_entry_price'] - pos['p_1s'])/pos['p_1s']*100, 2) if pos['p_1s'] else 0,
             "p_diff_3s": round((pos['expected_entry_price'] - pos['p_3s'])/pos['p_3s']*100, 2) if pos['p_3s'] else 0,

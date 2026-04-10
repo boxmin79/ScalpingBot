@@ -174,6 +174,7 @@ class UniverseBuilder:
         # 2. 🔥 [추가] 60일 평균 거래량 계산 (RealtimeManager의 분당 평균 기준용)
         # RealtimeManager는 이 값을 390(장 운영 시간)으로 나누어 '분당 평균'을 구함
         avg_vol_60 = sum([day['vol'] for day in chart_data[:60]]) / 60
+        avg_amt_60 = sum([day['amt'] for day in chart_data[:60]]) / 60
         
         # 유동주식수 대비 회전율 계산
         turnover_20 = (avg_vol_20 / floating_shares) * 100 if floating_shares > 0 else 0
@@ -196,9 +197,10 @@ class UniverseBuilder:
                 "code": code,
                 "name": self.api.obj_code_mgr.CodeToName(code),
                 "market": "KOSPI" if self.api.obj_code_mgr.GetStockMarketKind(code) == 1 else "KOSDAQ",
-                "market_cap": round(market_cap / 100_000_000, 1),
-                "avg_amt_20": round(avg_amt_20 / 100_000_000, 1),
-                "avg_vol_60": int(avg_vol_60), # 🎯 60일 평균 거래량 추가
+                "market_cap": int(market_cap),       # 원 단위 그대로 저장
+                "avg_amt_20": int(avg_amt_20),       # 원 단위 그대로 저장
+                "avg_amt_60": int(avg_amt_60),       # 원 단위 그대로 저장
+                "avg_vol_60": int(avg_vol_60),        
                 "floating_ratio": floating_ratio,
                 "avg_turnover_20": round(turnover_20, 3)
             }
